@@ -1,48 +1,48 @@
 # vk_autosocial
-Script which is working with Social Network VK and automate some processes via API.
 
-Below you can find currently implemented features with small description.
+**vk_autosocial** is a script designed for working with the VK (VKontakte) social network to automate various processes using the VK API. Below, you'll find a list of currently implemented features along with brief descriptions.
 
-# Public Management
-images_getter(folder, vk_session)
+## Public Management
 
-Method which is consuming images via API to the hard disk.
+### `images_getter(folder, vk_session)`
 
-folder - name of the folder, where images will be stored. tmp/ folder by default in the same place with script.
-vk_session - established VK session
+This method consumes images via the VK API and saves them to your hard disk.
 
-check_for_duplicates(folder)
+- `folder`: Name of the folder where images will be stored. By default, it uses the 'tmp/' folder located in the same directory as the script.
+- `vk_session`: An established VK session.
 
-Method which is checking tmp/ folder for possible duplicates and delete them if existed.
+### `check_for_duplicates(folder)`
 
-stories_publisher(folder, vk_session)
+This method checks the 'tmp/' folder for possible duplicate images and deletes them if they exist.
 
-Method looking into tmp/ folder, finding images with height and weight required for stories and make 10 stories.
-Images from tmp/ will be deleted.
+### `stories_publisher(folder, vk_session)`
 
-post_publisher(folder, vk_session)
+Automates the creation of VK stories. It scans the 'tmp/' folder for images with the required dimensions for VK stories and generates up to 10 stories. Images from 'tmp/' will be deleted after the stories are created.
 
-Posts maker. Creating posts every N hour and put them into delayed posts.
+### `post_publisher(folder, vk_session)`
 
-# Page Management
-friends_list_cleaner(vk_session, week)
+Creates and schedules posts at specified intervals. Posts are added to the delayed posts section.
 
-Cleanup of them friends list by last activity.
+## Page Management
 
-subscription_cleaner(vk_session)
+### `friends_list_cleaner(vk_session, week)`
 
-Delete all unnecessary subscriptions from your account. 
+Cleans up your friends list based on their last activity. Friends who haven't been active within the specified time frame (in weeks) are removed.
 
-friends_adder(vk_session, month, sex)
+### `subscription_cleaner(vk_session)`
 
-Sending invitations for friends to the people from GROUPS (in conf.cfg) by gender.
+Deletes unnecessary subscriptions from your VK account.
 
-sex=1 - female
-sex=2 - male
+### `friends_adder(vk_session, month, sex)`
 
-# Communities analysing
-community_members_analyser(vk_session, month, week, chart_folder)
-community_posts_analyser(vk_session, month, week, chart_folder)
+Sends friend invitations to people from specified groups (configured in `conf.cfg`) based on their gender.
 
-Two methods which are using Pandas for making charts into charts/ folder. 
-Methods will provide statistics on the users activities and reactions on the posts in the chosen group (GROUP_TO_CHECK from conf.cfg)
+- `sex=1` - Female
+- `sex=2` - Male
+
+## Communities Analysis
+
+### `community_members_analyser(vk_session, month, week, chart_folder)`
+### `community_posts_analyser(vk_session, month, week, chart_folder)`
+
+Utilizes Pandas to generate charts in the 'charts/' folder. These charts offer insights into user activities and reactions to posts in the selected group (configured in `conf.cfg`).
