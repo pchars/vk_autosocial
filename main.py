@@ -4,7 +4,7 @@ import random
 import time
 from datetime import datetime
 import imagehash
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 import vk_api
 import requests
 import configparser
@@ -38,7 +38,7 @@ def main():
 
     # Public Management
     # images_getter(folder, vk_session)
-    check_for_duplicates(folder)
+    # check_for_duplicates(folder)
     # stories_publisher(folder, vk_session)
     post_publisher(folder, vk_session)
 
@@ -46,49 +46,44 @@ def main():
     # friends_list_cleaner(vk_session, week)
     # subscription_cleaner(vk_session)
     sex = 1  # gender for friends adder, 1 - female, 2 - male
-    friends_adder(vk_session, month, sex)  # Add friends from GROUPS variable by gender and activity
+    # friends_adder(vk_session, month, sex)  # Add friends from GROUPS variable by gender and activity
 
     # Communities analysing
-    community_members_analyser(vk_session, month, week, chart_folder)
-    community_posts_analyser(vk_session, week, chart_folder)
+    # community_members_analyser(vk_session, month, week, chart_folder)
+    # community_posts_analyser(vk_session, week, chart_folder)
 
 
+# TODO fix case when you're not member of the group "Error: [203] Access to group denied: access to the group is denied."
 def friends_adder(vk_session, time_shift, sex):
     # Get the list of friend friends users
     api = vk_session.get_api()
     count = 0
     flood_count = 0
     # Iterate over the list of these users
+    # TODO do the testing with these two groups GROUPS=214580081,188503062
     for group in config['GROUPS']['GROUPS'].split(','):
         try:
             response = api.groups.getMembers(group_id=group, fields='sex, last_seen')
-        except vk_api.exceptions.ApiError as api_err:
-            if "flood" in str(api_err).lower():
-                print('{0}[Warn]{1} Limit for getting list of suggested friends was reached.'.format(Colors.WARNING,
-                                                                                                     Colors.ENDC))
-            else:
-                print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Unexpected error was occur. Error: ' + str(
-                    api_err))
-            break
-        if len(response["items"]) != 0:
-            for user in response["items"]:
-                # add users by gender and send invites only to active users
-                if user['sex'] == sex and ('last_seen' in user.keys() and user['last_seen']['time'] >= time_shift):
-                    # Add the user to friends
-                    try:
+            if len(response["items"]) != 0:
+                for user in response["items"]:
+                    # add users by gender and send invites only to active users
+                    if user['sex'] == sex and ('last_seen' in user.keys() and user['last_seen']['time'] >= time_shift):
+                        # Add the user to friends
                         api.friends.add(user_id=user["id"])
                         count += 1
-                    except vk_api.exceptions.ApiError as api_err:
-                        if "flood" in str(api_err).lower():
-                            print(Colors.WARNING + '[Warn]' + Colors.ENDC + ' Limit for adding friends was reached.')
-                            flood_count += 1
-                        else:
-                            print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Unexpected error was occur. Error: ' + str(
-                                api_err))
-                        break
-        else:
-            print('{0}[Warn]{1} No users found in the group.'.format(Colors.WARNING, Colors.ENDC))
-        if flood_count == 3:
+            else:
+                print('{0}[Warn]{1} No users found in the group.'.format(Colors.WARNING, Colors.ENDC))
+        except vk_api.exceptions.ApiError as api_err:
+            if "flood" in str(api_err).lower():
+                print('{0}[Warn]{1} Limit for adding friends was reached.'.format(Colors.WARNING, Colors.ENDC))
+                flood_count += 1
+                if flood_count >= 3:
+                    break
+            elif "blacklist" in str(api_err).lower():
+                print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Unexpected error was occur. Error: ' + str(
+                    api_err))
+                continue
+        if flood_count >= 3:
             break
         if count > 250:
             break
@@ -193,10 +188,15 @@ def session_maker():
     return vk_session
 
 
+# TODO to fix issue with "Error: [100] One of the parameters specified was missing or invalid: invalid publish_date param, publish_date is 1729260000", need to fix return from post_maker function
 def post_publisher(folder, vk_session, time_delay=28800):
+    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Starting publication of posts.')
     group = config['GROUPS']['YOUR_GROUP']
     # Set the delay in seconds
-    now = time.time()
+    if config['POSTS']['START_TIME'] == '':
+        now = time.time()
+    else:
+        now = float(config['POSTS']['START_TIME'])
     delay = time_delay
     # Get an upload URL for a photo
     vk = vk_session.get_api()
@@ -205,6 +205,8 @@ def post_publisher(folder, vk_session, time_delay=28800):
 
     # Use time of last postponed post instead of NOW in case we have postponed posts
     dates = []
+    # post_ids = []
+    # messages = []
     p = vk.wall.get(owner_id=-int(group), filter='postponed')
     if p['count'] > 0:
         iter_count = int(math.ceil((float(p['count']) / 20)))
@@ -214,12 +216,42 @@ def post_publisher(folder, vk_session, time_delay=28800):
                 if 'post_type' in post.keys() and post['post_type'] == 'postpone':
                     if 'date' in post.keys():
                         dates.append(post['date'])
+                    # post_ids.append(post['id'])
+                    # messages.append(post['text'])
         dates.sort()
+    # TODO: to make a feature which will allow rebuild GAP in time of postponed posts
+    #     post_ids.sort()
+    #     gap_detector = False
+    #     for i in range(0, len(dates)):
+    #         try:
+    #             if dates[i] - dates[i+1] != time_delay:
+    #                 print(Colors.WARNING + '[Warn]' + Colors.ENDC + ' There is a gap in postponed posts. Date rebuild is required!')
+    #                 gap_detector = True
+    #                 break
+    #         except IndexError:
+    #             continue
+    #     if gap_detector:
+    #         try:
+    #             for post_id in post_ids:
+    #                 i = 0
+    #                 publish_date = int(now + delay)
+    #                 # Make a delayed post on the wall of a user or community
+    #                 vk.wall.edit(owner_id=-int(group),
+    #                              post_id=post_id,
+    #                              message=messages[i],
+    #                              publish_date=publish_date)
+    #                 i += 1
+    #         except vk_api.exceptions.ApiError as e:
+    #             print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error: ' + str(e))
+    #             return
+    #
+    # exit()
 
     # Upload the photo to the server
     for file in os.listdir(folder):
         photo = open(folder + '/' + file, 'rb')
         response = requests.post(upload_url, files={'photo': photo}).json()
+
         # Save the photo to the server and get the photo ID
         try:
             vk_photo = vk.photos.saveWallPhoto(group_id=int(group), server=response['server'], photo=response['photo'],
@@ -236,7 +268,8 @@ def post_publisher(folder, vk_session, time_delay=28800):
             photos.append(photo_id)
         elif len(photos) == 6:
             if p['count'] > 0:
-                post_maker(delay, group, int(dates[-1]), photos, vk)
+                post_maker(delay, group, now, photos, vk)
+                # post_maker(delay, group, int(dates[-1]), photos, vk)
             else:
                 post_maker(delay, group, now, photos, vk)
             delay += time_delay
@@ -264,17 +297,31 @@ def post_maker(delay, group, start_time, photos, vk):
     publish_date = int(start_time + delay)
     db_text = config['POSTS']['TEXT']
     quotes_for_post = delete_duplicates_from_text_db(db_text)
-
     try:
         # Make a delayed post on the wall of a user or community
-        vk.wall.post(owner_id=-int(group),
-                     message=random.choice(quotes_for_post) + "\n\n#cute #aesthetics #состояние_души #эстетика "
-                                                              "#вдохновение",
-                     publish_date=publish_date, attachments=photos)
+        if int(round((publish_date % time.time()) / 60 / 60 / 24, 0)) % int(config['POSTS']['TEXT']) == 0:
+            vk.wall.post(owner_id=-int(group),
+                         message="Привет, дорогие участники! \n\nРады приветствовать вас в нашем уютном "
+                                 "чате! Здесь мы сможем делиться новостями, устраивать обсуждения, поддерживать друг "
+                                 "друга и просто весело проводить время. \n\nНе стесняйтесь знакомиться и "
+                                 "делиться своими увлечениями! Будем рады видеть ваши фото, идеи, советы и всё, "
+                                 "что может сделать наше сообщество ещё ярче! \n\nПрисоединяйтесь по "
+                                 "ссылке: {0}\n\nДавайте сделаем этот чат удивительным местом! \n\n#cute "
+                                 "#aesthetics #состояние_души #эстетика #вдохновение".format(
+                             config['POSTS']['GROUP_CHAT_LINK']),
+                         publish_date=publish_date, attachments=photos)
+            print(Colors.OKGREEN + '[Info]' + Colors.ENDC + 'Post about CHAT was published. Going to schedule next '
+                                                            'post.')
+        else:
+            vk.wall.post(owner_id=-int(group),
+                         message=random.choice(quotes_for_post) + "\n\n#cute #aesthetics #состояние_души #эстетика "
+                                                                  "#вдохновение",
+                         publish_date=publish_date, attachments=photos)
+            print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Post was published. Going to schedule next post.')
     except vk_api.exceptions.ApiError as e:
         print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error: ' + str(e) + ', publish_date is ' + str(publish_date))
+        return
     photos.clear()
-
 
 def images_getter(folder, vk_session):
     if not os.path.isdir(folder):
@@ -312,7 +359,19 @@ def check_for_duplicates(folder):
     # Create a dictionary to store the hashes
     hashes = {}
 
-    # Loop through all the files in the folder
+    # Loop through all the files in the folder and remove broken images
+    for file in os.listdir(folder):
+        # Calculate the hash for the image
+        try:
+            image_hash = imagehash.phash(Image.open(folder + '/' + file))
+        except UnidentifiedImageError:
+            os.remove(folder + '/' + file)
+            print(Colors.WARNING + '[Warn]' + Colors.ENDC + f' Image is broken and deleted: {file}')
+        except OSError:
+            os.remove(folder + '/' + file)
+            print(Colors.WARNING + '[Warn]' + Colors.ENDC + f' Image is broken and deleted: {file}')
+
+    # Loop through all the files in the folder and remove duplicates afterwards
     for file in os.listdir(folder):
         # Calculate the hash for the image
         image_hash = imagehash.phash(Image.open(folder + '/' + file))
