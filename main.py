@@ -40,7 +40,7 @@ def main():
     # images_getter(folder, vk_session)
     # check_for_duplicates(folder)
     # stories_publisher(folder, vk_session)
-    post_publisher(folder, vk_session)
+    # post_publisher(folder, vk_session)
 
     # Page Management
     # friends_list_cleaner(vk_session, week)
@@ -50,7 +50,7 @@ def main():
 
     # Communities analysing
     # community_members_analyser(vk_session, month, week, chart_folder)
-    # community_posts_analyser(vk_session, week, chart_folder)
+    community_posts_analyser(vk_session, week, chart_folder)
 
 
 # TODO fix case when you're not member of the group "Error: [203] Access to group denied: access to the group is denied."
@@ -559,8 +559,10 @@ def community_posts_analyser(vk_session, time_shift, chart_folder):
     tools = vk_api.VkTools(vk_session)
     posts_info = {'date-views': [], 'date-likes': [], 'date-reposts': []}
     historical_posts_info = {'date-views': [], 'date-likes': [], 'date-reposts': []}
+    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Starting analysis of the posts.')
     try:
         wall = tools.get_all('wall.get', 10, {'owner_id': -int(group)})
+        print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Total amount of the posts is ' + str(wall['count']))
         for post in range(wall['count']):
             if wall['items'][post]['date'] >= time_shift:
                 posts_info['date-views'].append(
@@ -569,12 +571,16 @@ def community_posts_analyser(vk_session, time_shift, chart_folder):
                     str(wall['items'][post]['date']) + ',' + str(wall['items'][post]['likes']['count']))
                 posts_info['date-reposts'].append(
                     str(wall['items'][post]['date']) + ',' + str(wall['items'][post]['reposts']['count']))
-            historical_posts_info['date-views'].append(
-                str(wall['items'][post]['date']) + ',' + str(wall['items'][post]['views']['count']))
-            historical_posts_info['date-likes'].append(
-                str(wall['items'][post]['date']) + ',' + str(wall['items'][post]['likes']['count']))
-            historical_posts_info['date-reposts'].append(
-                str(wall['items'][post]['date']) + ',' + str(wall['items'][post]['reposts']['count']))
+            try:
+                historical_posts_info['date-views'].append(
+                    str(wall['items'][post]['date']) + ',' + str(wall['items'][post]['views']['count']))
+                historical_posts_info['date-likes'].append(
+                    str(wall['items'][post]['date']) + ',' + str(wall['items'][post]['likes']['count']))
+                historical_posts_info['date-reposts'].append(
+                    str(wall['items'][post]['date']) + ',' + str(wall['items'][post]['reposts']['count']))
+            except KeyError as e:
+                print('{0}[Error]{1} Post {2} have an error while processing: {3}'.format(Colors.FAIL, Colors.ENDC, str(
+                    wall['items'][post]['date']), str(e)))
     except vk_api.exceptions.ApiError as e:
         print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error: ' + str(e))
 
