@@ -1,16 +1,25 @@
 import math
-import os
 import random
-import time
-from datetime import datetime
 import imagehash
 from PIL import Image, UnidentifiedImageError
-import vk_api
-import requests
 import configparser
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import vk_api
+import aiohttp
+import asyncio
+from typing import List, Dict, Optional
+import cv2
+from datetime import datetime
+import os
+import time
+import requests
+import numpy as np
+from PIL import Image
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from skimage.color import rgb2lab, deltaE_ciede2000
 
 
 class Colors:
@@ -31,16 +40,28 @@ config.read('conf.cfg')
 
 def main():
     folder = 'tmp'
+    os.makedirs(folder, exist_ok=True)
     chart_folder = 'charts'
     month = int(time.time() - 2678400)  # current time minus 31 day
     week = int(time.time() - 604800)  # current time minus one week
     vk_session = session_maker()
 
     # Public Management
-    # images_getter(folder, vk_session)
-    # check_for_duplicates(folder)
+    #images_getter(folder, vk_session)
+    if os.name == 'nt':
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    #asyncio.run(images_getter_async(
+    #    folder=folder,
+    #    vk_session=vk_session,
+    #    max_posts_per_group=100,  # Set to None for no limit
+    #    max_concurrent=10
+    #))
+
+    #check_for_duplicates(folder)
     # stories_publisher(folder, vk_session)
-    # post_publisher(folder, vk_session)
+
+    post_publisher(folder, vk_session, time_delay=14400)
+    #post_publisher(folder, vk_session)
     # wall_cleaner(vk_session)
 
     # Page Management
@@ -189,20 +210,111 @@ def session_maker():
     return vk_session
 
 
-def wall_cleaner(vk_session):
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Starting wall clean request.')
-    tools = vk_api.VkTools(vk_session)
+# def wall_cleaner(vk_session):
+#     print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Starting wall clean request.')
+#     tools = vk_api.VkTools(vk_session)
+#     vk = vk_session.get_api()
+#     try:
+#         wall = tools.get_all('wall.get', 100, {'owner_id': -int(config['GROUPS']['YOUR_GROUP'])})
+#     except vk_api.exceptions as e:
+#         print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error: ' + str(e))
+#
+#     print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Posts count: ', wall['count'])
+#     for post in range(wall['count']):
+#         post_for_remove = vk.wall.delete(owner_id=-int(config['GROUPS']['YOUR_GROUP']), post_id=wall['items'][post]['id'])
+#
+#         print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Post was removed: ' + str(post_for_remove))
+
+def wall_cleaner(vk_session, delete_postponed: bool = True, delete_published: bool = True):
+    """
+    Удаляет посты из группы с возможностью выбора типа
+
+    :param vk_session: Сессия VK API
+    :param delete_postponed: Удалять отложенные посты (по умолчанию True)
+    :param delete_published: Удалять опубликованные посты (по умолчанию True)
+    """
+    log_with_timestamp(Colors.OKGREEN, "Starting comprehensive wall cleanup")
+
+    group_id = -int(config['GROUPS']['YOUR_GROUP'])
     vk = vk_session.get_api()
+    total_deleted = 0
+
+    def delete_posts(post_type: str):
+        nonlocal total_deleted
+        offset = 0
+        count = 100  # Максимальное значение для одного запроса
+
+        while True:
+            try:
+                # Получаем посты пачками
+                response = vk.wall.get(
+                    owner_id=group_id,
+                    filter=post_type if post_type else 'all',
+                    count=count,
+                    offset=offset
+                )
+
+                if not response['items']:
+                    break
+
+                # Удаляем в обратном порядке (от новых к старым)
+                for post in reversed(response['items']):
+                    try:
+                        result = vk.wall.delete(
+                            owner_id=group_id,
+                            post_id=post['id']
+                        )
+                        if result == 1:
+                            log_with_timestamp(Colors.OKGREEN, f"Deleted post {post['id']}")
+                            total_deleted += 1
+                        else:
+                            log_with_timestamp(Colors.FAIL, f"Failed to delete post {post['id']}")
+
+                        # Задержка для избежания флуд-контроля
+                        time.sleep(0.35)
+
+                    except vk_api.ApiError as e:
+                        if 'flood' in str(e).lower():
+                            log_with_timestamp(Colors.WARNING, "Flood control triggered, pausing for 5 sec")
+                            time.sleep(5)
+                        else:
+                            log_with_timestamp(Colors.FAIL, f"API Error: {str(e)}")
+                            break
+
+                offset += count
+
+            except Exception as e:
+                log_with_timestamp(Colors.FAIL, f"Error: {str(e)}")
+                break
+
     try:
-        wall = tools.get_all('wall.get', 100, {'owner_id': -int(config['GROUPS']['YOUR_GROUP'])})
-    except vk_api.exceptions as e:
-        print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error: ' + str(e))
+        # Удаляем отложенные посты
+        if delete_postponed:
+            log_with_timestamp(Colors.OKGREEN, "Processing postponed posts...")
+            delete_posts(post_type='postponed')
 
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Posts count: ', wall['count'])
-    for post in range(wall['count']):
-        post_for_remove = vk.wall.delete(owner_id=-int(config['GROUPS']['YOUR_GROUP']), post_id=wall['items'][post]['id'])
+        # Удаляем опубликованные посты
+        if delete_published:
+            log_with_timestamp(Colors.OKGREEN, "Processing published posts...")
+            delete_posts(post_type='owner')
 
-        print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Post was removed: ' + str(post_for_remove))
+    except Exception as e:
+        log_with_timestamp(Colors.FAIL, f"Critical error: {str(e)}")
+
+    log_with_timestamp(Colors.OKGREEN, f"Cleanup completed. Total deleted: {total_deleted}")
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def post_publisher(folder, vk_session, time_delay=28800):
@@ -238,10 +350,11 @@ def post_publisher(folder, vk_session, time_delay=28800):
         else:
             now = float(config['POSTS']['START_TIME'])
             print(
-                Colors.OKGREEN + '[Info]' + Colors.ENDC + 'There is no postponed posts in the group, I\'m taking time '
+                Colors.OKGREEN + '[Info]' + Colors.ENDC + ' There is no postponed posts in the group, I\'m taking time '
                                                           'from the config: ' + str(now))
 
     # Upload the photo to the server
+
     for file in os.listdir(folder):
         photo = open(folder + '/' + file, 'rb')
         response = requests.post(upload_url, files={'photo': photo}).json()
@@ -265,6 +378,7 @@ def post_publisher(folder, vk_session, time_delay=28800):
             delay += time_delay
         os.remove(folder + '/' + file)
     print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Finished preparing postponed posts.')
+
 
 
 def delete_duplicates_from_text_db(db_text_file=config['POSTS']['TEXT']):
@@ -295,7 +409,7 @@ def post_maker(delay, group, start_time, photos, vk):
             print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Post was published. Going to schedule next post.')
         else:
             if int(round((publish_date % time.time()) / 60 / 60 / 24, 0)) % int(
-                    config['POSTS']['GROUP_CHAT_REMINDER']) == 0 and (p['count'] > 0 and config['POSTS']['GROUP_CHAT_LINK'] not in p['items'][-1]['text']):
+                    config['POSTS']['GROUP_CHAT_REMINDER']) == 0 and (p['count'] > 0 and (config['POSTS']['GROUP_CHAT_LINK'] not in p['items'][-1]['text'] and config['POSTS']['GROUP_CHAT_LINK'] not in p['items'][-2]['text'])):
                 vk.wall.post(owner_id=-int(group),
                              message=str(config['POSTS']['GROUP_CHAT_REMINDER_TEXT']).format(
                                  config['POSTS']['GROUP_CHAT_LINK'], config['POSTS']['HASHTAGS'], '\n\n'),
@@ -313,67 +427,225 @@ def post_maker(delay, group, start_time, photos, vk):
     photos.clear()
 
 
-def images_getter(folder, vk_session):
-    if not os.path.isdir(folder):
-        counter_for_image_name = 1
-    else:
-        counter_for_image_name = len(os.listdir(folder))
-    for group in config['GROUPS']['GROUPS'].split(','):
-        vk = vk_session.get_api()
+def log_with_timestamp(color, message):
+    """Helper function to print logs with timestamps and colors."""
+    print(f"{color}[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {Colors.ENDC}{message}")
+
+
+async def download_image(session: aiohttp.ClientSession, url: str, path: str, retries: int = 10) -> bool:
+    """Download image with retries on failure."""
+    for attempt in range(retries):
         try:
-            wall = vk.wall.get(owner_id=-int(group), count=100)
-        except vk_api.exceptions.ApiError as e:
-            print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error: ' + str(e))
-            continue
-        except vk_api.exceptions.ApiHttpError as e:
-            print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error: ' + str(e))
-            continue
-        print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Posts count: ', wall['count'])
-        for post in range(wall['count']):
-            if len(wall['items'][post]['attachments']) > 0 and wall['items'][post]['marked_as_ads'] == 0 and \
-                    'is_pinned' not in wall['items'][post].keys() and 'copy_history' not in wall['items'][post].keys():
-                for attachment in wall['items'][post]['attachments']:
-                    if attachment['type'] == 'photo':
-                        try:
-                            image = requests.get(attachment['photo']['sizes'][-1]['url'])
-                            if not os.path.isdir(folder):
-                                os.mkdir(folder)
-                            open(folder + "/image" + str(counter_for_image_name) + ".jpg", "wb").write(image.content)
-                            counter_for_image_name += 1
-                        except requests.exceptions.ConnectionError as e:
-                            print(Colors.FAIL + '[Error] ' + Colors.ENDC + str(e))
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' All images were saved.')
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                if resp.status == 200:
+                    with open(path, 'wb') as f:
+                        f.write(await resp.read())
+                    log_with_timestamp(Colors.OKGREEN, f"[Info] Downloaded: {path}")
+                    return True
+                log_with_timestamp(Colors.WARNING, f"[Warn] HTTP {resp.status}: {url} (attempt {attempt + 1}/{retries})")
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            log_with_timestamp(Colors.FAIL, f"[Error] Failed: {url} - {type(e).__name__} (attempt {attempt + 1}/{retries})")
+        await asyncio.sleep(1)
+    return False
 
 
-def check_for_duplicates(folder):
-    # Create a dictionary to store the hashes
+async def fetch_group_posts(
+        vk,
+        group_id: str,
+        max_posts: Optional[int] = None,
+        batch_size: int = 100
+) -> List[Dict]:
+    """
+    Fetch posts from VK group with pagination.
+
+    Args:
+        vk: Authenticated VK API instance
+        group_id: Group ID or screen name
+        max_posts: Maximum posts to fetch (None for all available)
+        batch_size: Number of posts per API request (max 100)
+    """
+    try:
+        # Get total post count
+        total_count = (await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: vk.wall.get(owner_id=-int(group_id), count=1)
+        ))['count']
+    except Exception as e:
+        log_with_timestamp(Colors.FAIL, f"[Error] Failed to get wall length: {e}")
+        return []
+
+    post_limit = min(max_posts, total_count) if max_posts else total_count
+    if post_limit <= 0:
+        return []
+
+    all_posts = []
+    offset = 0
+
+    while offset < post_limit:
+        try:
+            current_batch = min(batch_size, post_limit - offset)
+            posts = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: vk.wall.get(
+                    owner_id=-int(group_id),
+                    count=current_batch,
+                    offset=offset
+                )
+            )
+
+            if not posts.get('items'):
+                break
+
+            all_posts.extend(posts['items'])
+            offset += len(posts['items'])
+            log_with_timestamp(
+                Colors.OKGREEN,
+                f"[Info] Group {group_id}: loaded {len(all_posts)}/{post_limit} posts"
+            )
+
+            await asyncio.sleep(0.5)  # Rate limiting
+
+        except Exception as e:
+            log_with_timestamp(Colors.FAIL, f"[Error] Error loading posts (offset={offset}): {e}")
+            break
+
+    return all_posts
+
+
+async def images_getter_async(
+        folder: str,
+        vk_session,
+        max_posts_per_group: Optional[int] = None,
+        max_concurrent: int = 10
+) -> None:
+    """
+    Main downloader function with configurable limits.
+
+    Args:
+        folder: Target directory for images
+        vk_session: Authenticated VK session
+        max_posts_per_group: Max posts to process per group (None for all)
+        max_concurrent: Maximum concurrent downloads
+    """
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+
+    counter = 1
+    vk = vk_session.get_api()
+    connector = aiohttp.TCPConnector(limit=max_concurrent)
+    timeout = aiohttp.ClientTimeout(total=60)
+
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+        for group in config['GROUPS']['GROUPS'].split(','):
+            group = group.strip()
+            if not group:
+                continue
+
+            log_with_timestamp(Colors.OKGREEN, f"[Info] Processing group {group}...")
+            posts = await fetch_group_posts(vk, group, max_posts=max_posts_per_group)
+
+            if not posts:
+                continue
+
+            # Extract all image URLs
+            urls = []
+            for post in posts:
+                if post.get('marked_as_ads', 0) == 1:
+                    continue
+                for att in post.get('attachments', []):
+                    if att.get('type') == 'photo' and 'sizes' in att.get('photo', {}):
+                        urls.append(max(att['photo']['sizes'], key=lambda x: x['width'])['url'])
+
+            # Download images
+            tasks = []
+            for url in urls:
+                path = os.path.join(folder, f"img_{counter}.jpg")
+                tasks.append(download_image(session, url, path))
+                counter += 1
+
+            results = await asyncio.gather(*tasks)
+            success = sum(results)
+            log_with_timestamp(
+                Colors.OKGREEN if success == len(urls) else Colors.WARNING,
+                f"[Info] Group {group}: {success}/{len(urls)} images downloaded"
+            )
+
+
+def check_for_duplicates(folder: str, similarity_threshold: int = 5) -> None:
+    """
+    Remove broken images and duplicates using perceptual hashing with parallel processing.
+
+    Args:
+        folder: Path to directory with images
+        similarity_threshold: Max hash difference to consider images identical (0=exact match)
+    """
+    if not os.path.exists(folder):
+        log_with_timestamp(Colors.FAIL, f"Directory does not exist: {folder}")
+        return
+
     hashes = {}
+    broken_files = []
+    duplicate_files = []
 
-    # Loop through all the files in the folder and remove broken images
-    for file in os.listdir(folder):
-        # Calculate the hash for the image
+    def process_file(file: str):
+        filepath = os.path.join(folder, file)
         try:
-            image_hash = imagehash.phash(Image.open(folder + '/' + file))
-        except UnidentifiedImageError:
-            os.remove(folder + '/' + file)
-            print(Colors.WARNING + '[Warn]' + Colors.ENDC + f' Image is broken and deleted: {file}')
-        except OSError:
-            os.remove(folder + '/' + file)
-            print(Colors.WARNING + '[Warn]' + Colors.ENDC + f' Image is broken and deleted: {file}')
+            with Image.open(filepath) as img:
+                if img.mode in ('RGBA', 'LA'):
+                    img = img.convert('RGB')
+                return file, imagehash.phash(img)
+        except (OSError, IOError, UnidentifiedImageError, ValueError) as e:
+            log_with_timestamp(Colors.WARNING, f"[Warn] Invalid image detected: {file} - {str(e)[:50]}...")
+            return file, None
+        except Exception as e:
+            log_with_timestamp(Colors.FAIL, f"[Error] Unexpected error processing {file}: {str(e)[:50]}...")
+            return file, None
 
-    # Loop through all the files in the folder and remove duplicates afterwards
-    for file in os.listdir(folder):
-        # Calculate the hash for the image
-        image_hash = imagehash.phash(Image.open(folder + '/' + file))
+    try:
+        # First pass: parallel processing of all files
+        with ThreadPoolExecutor(max_workers=min(32, os.cpu_count() * 2 + 4)) as executor:
+            results = list(executor.map(process_file, os.listdir(folder)))
 
-        # If the hash is already in the dictionary, it is a duplicate
-        if image_hash in hashes:
-            os.remove(folder + '/' + file)
-            print(Colors.WARNING + '[Warn]' + Colors.ENDC + f' Duplicate found and deleted: {file}')
-        else:
-            # Add the hash to the dictionary
-            hashes[image_hash] = file
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' All duplicates were deleted.')
+        # Remove broken files
+        for file, _ in filter(lambda x: x[1] is None, results):
+            try:
+                os.remove(os.path.join(folder, file))
+                log_with_timestamp(Colors.WARNING, f"[Warn] Deleted invalid image: {file}")
+                broken_files.append(file)
+            except Exception as e:
+                log_with_timestamp(Colors.FAIL, f"[Error] Failed to delete {file}: {str(e)[:50]}...")
+
+        # Second pass: duplicate detection with threshold
+        hash_dict = {}
+        for file, img_hash in filter(lambda x: x[1] is not None, results):
+            is_duplicate = False
+            for existing_hash in hash_dict:
+                if img_hash - existing_hash <= similarity_threshold:
+                    duplicate_files.append(file)
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                hash_dict[img_hash] = file
+
+        # Remove duplicates
+        for file in duplicate_files:
+            try:
+                os.remove(os.path.join(folder, file))
+                log_with_timestamp(Colors.WARNING, f"[Warn] Deleted duplicate: {file}")
+            except Exception as e:
+                log_with_timestamp(Colors.FAIL, f"[Error] Failed to delete duplicate {file}: {str(e)[:50]}...")
+
+        # Summary log
+        log_with_timestamp(
+            Colors.OKGREEN,
+            f"[Info] Cleanup completed. Removed {len(broken_files)} invalid and {len(duplicate_files)} duplicate images."
+        )
+
+    except Exception as e:
+        log_with_timestamp(Colors.FAIL, f"[Error] Fatal error during duplicate check: {str(e)}")
+
+
+
 
 
 def stories_publisher(folder, vk_session):
