@@ -1,67 +1,66 @@
+import asyncio
 import math
+import os
 import random
-import imagehash
-from PIL import Image, UnidentifiedImageError
-import configparser
-import pandas as pd
+import time
+from datetime import datetime
+from typing import List, Dict, Optional
+from pathlib import Path
+import aiohttp
 import matplotlib.pyplot as plt
+import pandas as pd
+import requests
 import seaborn as sns
 import vk_api
-import aiohttp
-import asyncio
-from typing import List, Dict, Optional
-import cv2
-from datetime import datetime
-import os
-import time
-import requests
-import numpy as np
 from PIL import Image
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
-from skimage.color import rgb2lab, deltaE_ciede2000
 
+from utils import AppConfig, setup_logging, get_logger, OSManagement
+from api.vk_auth import VKAuth
+from vk_autosocial.build.lib.services.image_processor import ImageProcessor
 
-class Colors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    OKCYAN = '\033[96m'
-    OKGREEN = '\033[92m'
-    WARNING = '\033[93m'
-    FAIL = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
-
-
-config = configparser.ConfigParser()
-config.read('conf.cfg')
+config = AppConfig.from_cfg_file()
+setup_logging(
+    log_level=config.logging.log_level,
+    log_file=config.logging.log_file,
+    console_output=config.logging.console_output
+)
+logger = get_logger(__name__)
+logger.info("Application started successfully!")
 
 
 def main():
-    folder = 'tmp'
-    os.makedirs(folder, exist_ok=True)
+    folder_name = Path('images')
+    folder = OSManagement(folder_path=folder_name)
+    if folder.is_folder_exists():
+        logger.info(f"Folder {folder_name} is ready to use")
+
     chart_folder = 'charts'
     month = int(time.time() - 2678400)  # current time minus 31 day
     week = int(time.time() - 604800)  # current time minus one week
-    vk_session = session_maker()
+
+    vk_auth = VKAuth(phone_number=config.auth.phone_number, password=config.auth.password, api_version=config.auth.api_version)
+
+    try:
+        vk_session = vk_auth.session_maker()
+    except Exception as e:
+        logger.error(f"Failed to create VK session: {e}")
+        return
 
     # Public Management
-    #images_getter(folder, vk_session)
     if os.name == 'nt':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    #asyncio.run(images_getter_async(
-    #    folder=folder,
-    #    vk_session=vk_session,
-    #    max_posts_per_group=100,  # Set to None for no limit
-    #    max_concurrent=10
-    #))
+    asyncio.run(images_getter_async(
+        folder=str(folder_name),
+        vk_session=vk_session,
+        max_posts_per_group=100,  # Set to None for no limit
+        max_concurrent=10
+    ))
+    image_processing = ImageProcessor(similarity_threshold=5, folder_path=folder_name)
+    image_processing.check_for_duplicates(folder_name)
+    # stories_publisher(folder_name, vk_session)
 
-    #check_for_duplicates(folder)
-    # stories_publisher(folder, vk_session)
-
-    post_publisher(folder, vk_session, time_delay=14400)
-    #post_publisher(folder, vk_session)
+    post_publisher(str(folder_name), vk_session, time_delay=14400)
+    #post_publisher(folder_name, vk_session)
     # wall_cleaner(vk_session)
 
     # Page Management
@@ -83,7 +82,9 @@ def friends_adder(vk_session, time_shift, sex):
     flood_count = 0
     # Iterate over the list of these users
     # TODO do the testing with these two groups GROUPS=214580081,188503062
-    for group in config['GROUPS']['GROUPS'].split(','):
+
+    # for group in config['GROUPS']['GROUPS'].split(','):
+    for group in config.groups.groups:
         try:
             response = api.groups.getMembers(group_id=group, fields='sex, last_seen')
             if len(response["items"]) != 0:
@@ -94,22 +95,21 @@ def friends_adder(vk_session, time_shift, sex):
                         api.friends.add(user_id=user["id"])
                         count += 1
             else:
-                print('{0}[Warn]{1} No users found in the group.'.format(Colors.WARNING, Colors.ENDC))
+                logger.warning('No users found in the group.')
         except vk_api.exceptions.ApiError as api_err:
             if "flood" in str(api_err).lower():
-                print('{0}[Warn]{1} Limit for adding friends was reached.'.format(Colors.WARNING, Colors.ENDC))
+                logger.warning('Limit for adding friends was reached.')
                 flood_count += 1
                 if flood_count >= 3:
                     break
             elif "blacklist" in str(api_err).lower():
-                print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Unexpected error was occur. Error: ' + str(
-                    api_err))
+                logger.error('Unexpected error was occur. Error: ' + str(api_err))
                 continue
         if flood_count >= 3:
             break
         if count > 250:
             break
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Requests to ' + str(count) + ' people(s) were sent.')
+    logger.info('Requests to ' + str(count) + ' people(s) were sent.')
 
 
 def friends_list_cleaner(vk_session, time_shift):
@@ -129,24 +129,21 @@ def friends_list_cleaner(vk_session, time_shift):
                     count_of_deleted_users += 1
                 except vk_api.exceptions.ApiError as error:
                     if "No friend or friend request found" in str(error):
-                        print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error occurred: ' + str(error))
+                        logger.error('Error occurred: ' + str(error))
                         problem_ids_list.append(user["id"])
                     else:
-                        print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error occurred: ' + str(error))
-        print('{0}[Info] {1}{2} deactivated and inactive friends were moved to subscribers.'.format(
-            Colors.OKGREEN, Colors.ENDC, str(count_of_deleted_users)))
+                        logger.error('Error occurred: ' + str(error))
+        logger.info(str(count_of_deleted_users) + ' deactivated and inactive friends were moved to subscribers.')
         if len(problem_ids_list) > 0:
-            print('{0}[Info] {1}{2} problem user(s) was/were not deleted from friends list, find list below.'.format(
-                Colors.OKGREEN, Colors.ENDC, str(len(problem_ids_list))))
-            print('{0}[Info]{1} ID(s): {2}'.format(
-                Colors.OKGREEN, Colors.ENDC, str(problem_ids_list)))
+            logger.info(str(len(problem_ids_list)) + ' problem user(s) was/were not deleted from friends list, find list below.')
+            logger.info('ID(s): ' + str(problem_ids_list))
     except vk_api.exceptions.ApiError as error:
         if 'User authorization failed' in str(error):
-            print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error occurred: ' + str(error))
-            print(Colors.WARNING + '[Warn]' + Colors.ENDC + ' Trying to do re-auth.')
+            logger.error('Error occurred: ' + str(error))
+            logger.warning('Trying to do re-auth.')
             vk_session.auth(reauth=True)
         else:
-            print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error occurred: ' + str(error))
+            logger.error('Error occurred: ' + str(error))
 
 
 # TODO should be tested with values more than 1500
@@ -167,63 +164,19 @@ def subscription_cleaner(vk_session):
                     api.friends.delete(user_id=user)
                     count_of_deleted_users += 1
                 except vk_api.exceptions.ApiError as error:
-                    print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error occurred: ' + str(error))
-        print('{0}[Info] {1}{2} subscriptions were deleted.'.format(
-            Colors.OKGREEN, Colors.ENDC, str(count_of_deleted_users)))
+                    logger.error('Error occurred: ' + str(error))
+        logger.info(str(count_of_deleted_users) + ' subscriptions were deleted.')
         if len(problem_ids_list) > 0:
-            print(
-                '{0}[Info] {1}{2} problem user(s) was/were not deleted from subscription list, find list below.'.format(
-                    Colors.OKGREEN, Colors.ENDC, str(len(problem_ids_list))))
-            print('{0}[Info]{1} ID(s): {2}'.format(
-                Colors.OKGREEN, Colors.ENDC, str(problem_ids_list)))
+            logger.info(str(len(problem_ids_list)) + ' problem user(s) was/were not deleted from subscription list, find list below.')
+            logger.info('ID(s): ' + str(problem_ids_list))
     except vk_api.exceptions.ApiError as error:
         if 'User authorization failed' in str(error):
-            print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error occurred: ' + str(error))
-            print(Colors.WARNING + '[Warn]' + Colors.ENDC + ' Trying to do re-auth.')
+            logger.error(' Error occurred: ' + str(error))
+            logger.warning('Trying to do re-auth.')
             vk_session.auth(reauth=True)
         else:
-            print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error occurred: ' + str(error))
+            logger.error(' Error occurred: ' + str(error))
 
-
-def session_maker():
-    login, password, api_version = '', '', ''
-    for key, value in config['AUTH'].items():
-        if key.lower() == 'phone_number':
-            login = value
-        elif key.lower() == 'password':
-            password = value
-        elif key.lower() == 'api_version':
-            api_version = value
-
-    vk_session = vk_api.VkApi(login=login, password=password, api_version=api_version)
-    vk_session.auth(token_only=True)
-    try:
-        try:
-            vk_session.auth(token_only=True)
-        except vk_api.AuthError as error_msg:
-            print(Colors.FAIL + '[Error] Problem with Auth observed. Error: ' + Colors.ENDC + str(error_msg))
-            exit()
-    except requests.exceptions.ConnectionError as con_error_msg:
-        print(Colors.FAIL + '[Error] Network problem observed. Error: ' + Colors.ENDC + str(con_error_msg))
-        exit()
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Connection was successfully established.')
-    return vk_session
-
-
-# def wall_cleaner(vk_session):
-#     print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Starting wall clean request.')
-#     tools = vk_api.VkTools(vk_session)
-#     vk = vk_session.get_api()
-#     try:
-#         wall = tools.get_all('wall.get', 100, {'owner_id': -int(config['GROUPS']['YOUR_GROUP'])})
-#     except vk_api.exceptions as e:
-#         print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error: ' + str(e))
-#
-#     print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Posts count: ', wall['count'])
-#     for post in range(wall['count']):
-#         post_for_remove = vk.wall.delete(owner_id=-int(config['GROUPS']['YOUR_GROUP']), post_id=wall['items'][post]['id'])
-#
-#         print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Post was removed: ' + str(post_for_remove))
 
 def wall_cleaner(vk_session, delete_postponed: bool = True, delete_published: bool = True):
     """
@@ -233,9 +186,9 @@ def wall_cleaner(vk_session, delete_postponed: bool = True, delete_published: bo
     :param delete_postponed: Удалять отложенные посты (по умолчанию True)
     :param delete_published: Удалять опубликованные посты (по умолчанию True)
     """
-    log_with_timestamp(Colors.OKGREEN, "Starting comprehensive wall cleanup")
+    logger.info("Starting comprehensive wall cleanup")
 
-    group_id = -int(config['GROUPS']['YOUR_GROUP'])
+    group_id = -config.groups.your_group
     vk = vk_session.get_api()
     total_deleted = 0
 
@@ -265,61 +218,48 @@ def wall_cleaner(vk_session, delete_postponed: bool = True, delete_published: bo
                             post_id=post['id']
                         )
                         if result == 1:
-                            log_with_timestamp(Colors.OKGREEN, f"Deleted post {post['id']}")
+                            logger.info(f"Deleted post {post['id']}")
                             total_deleted += 1
                         else:
-                            log_with_timestamp(Colors.FAIL, f"Failed to delete post {post['id']}")
+                            logger.error(f"Failed to delete post {post['id']}")
 
                         # Задержка для избежания флуд-контроля
                         time.sleep(0.35)
 
                     except vk_api.ApiError as e:
                         if 'flood' in str(e).lower():
-                            log_with_timestamp(Colors.WARNING, "Flood control triggered, pausing for 5 sec")
+                            logger.warning("Flood control triggered, pausing for 5 sec")
                             time.sleep(5)
                         else:
-                            log_with_timestamp(Colors.FAIL, f"API Error: {str(e)}")
+                            logger.error(f"API Error: {str(e)}")
                             break
 
                 offset += count
 
             except Exception as e:
-                log_with_timestamp(Colors.FAIL, f"Error: {str(e)}")
+                logger.error(f"Error: {str(e)}")
                 break
 
     try:
         # Удаляем отложенные посты
         if delete_postponed:
-            log_with_timestamp(Colors.OKGREEN, "Processing postponed posts...")
+            logger.info("Removing postponed posts...")
             delete_posts(post_type='postponed')
 
         # Удаляем опубликованные посты
         if delete_published:
-            log_with_timestamp(Colors.OKGREEN, "Processing published posts...")
+            logger.info("Removing published posts...")
             delete_posts(post_type='owner')
 
     except Exception as e:
-        log_with_timestamp(Colors.FAIL, f"Critical error: {str(e)}")
+        logger.error(f"Critical error: {str(e)}")
 
-    log_with_timestamp(Colors.OKGREEN, f"Cleanup completed. Total deleted: {total_deleted}")
-
-
-
-
-
-
-
-
-
-
-
-
-
+    logger.info(f"Cleanup completed. Total deleted: {total_deleted}")
 
 
 def post_publisher(folder, vk_session, time_delay=28800):
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Starting publication of posts.')
-    group = config['GROUPS']['YOUR_GROUP']
+    logger.info('Starting publication of posts.')
+    group = config.groups.your_group
 
     # Get an upload URL for a photo
     vk = vk_session.get_api()
@@ -337,21 +277,15 @@ def post_publisher(folder, vk_session, time_delay=28800):
             dates.append(item['date'])
         dates.sort()
         now = int(dates[-1]) + delay
-        print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Group already contains some postponed posts, first post will '
-                                                        'be published at ' + str(now))
+        logger.info('Group already contains some postponed posts, first post will be published at ' + str(now))
     else:
         # Set start time in seconds
-        if config['POSTS']['START_TIME'] == '':
+        if config.posts.start_time == '':
             now = time.time()
-            print(
-                '{0}[Info]{1} There is no postponed posts in the group and config is not configured, I\'m taking '
-                'current time for first post: {2}'.format(
-                    Colors.OKGREEN, Colors.ENDC, str(now)))
+            logger.info('There is no postponed posts in the group and config is not configured, I\'m taking current time for first post: ' + str(now))
         else:
-            now = float(config['POSTS']['START_TIME'])
-            print(
-                Colors.OKGREEN + '[Info]' + Colors.ENDC + ' There is no postponed posts in the group, I\'m taking time '
-                                                          'from the config: ' + str(now))
+            now = float(config.posts.start_time)
+            logger.info('There is no postponed posts in the group, I\'m taking time from the config: ' + str(now))
 
     # Upload the photo to the server
 
@@ -365,10 +299,10 @@ def post_publisher(folder, vk_session, time_delay=28800):
                                                hash=response['hash'])[0]
         except vk_api.exceptions.ApiError as error_msg:
             if "flood" in str(error_msg).lower():
-                print(Colors.WARNING + '[Warn]' + Colors.ENDC + ' Limit for adding postponed posts was reached.')
+                logger.warning('Limit for adding postponed posts was reached.')
                 break
             else:
-                print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Unexpected error was occur. Error: ' + str(error_msg))
+                logger.error('Unexpected error was occur. Error: ' + str(error_msg))
 
         photo_id = f"photo{vk_photo['owner_id']}_{vk_photo['id']}"
         if len(photos) < 6:
@@ -377,11 +311,11 @@ def post_publisher(folder, vk_session, time_delay=28800):
             post_maker(delay, group, now, photos, vk)
             delay += time_delay
         os.remove(folder + '/' + file)
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Finished preparing postponed posts.')
+    logger.info('Finished preparing postponed posts.')
 
 
 
-def delete_duplicates_from_text_db(db_text_file=config['POSTS']['TEXT']):
+def delete_duplicates_from_text_db(db_text_file=config.posts.text):
     real_lines = []
     with open(db_text_file) as f:
         lines = f.readlines()
@@ -399,37 +333,31 @@ def delete_duplicates_from_text_db(db_text_file=config['POSTS']['TEXT']):
 def post_maker(delay, group, start_time, photos, vk):
     # Calculate the publishing date as a Unix timestamp
     publish_date = int(start_time + delay)
-    db_text = config['POSTS']['TEXT']
+    db_text = config.posts.text
     quotes_for_post = delete_duplicates_from_text_db(db_text)
     try:
         p = vk.wall.get(owner_id=-int(group), filter='postponed')
         # Make a delayed post on the wall of a user or community
-        if len(config['POSTS']['GROUP_CHAT_REMINDER_TEXT']) == 0 and len(config['POSTS']['HASHTAGS']) == 0:
+        if len(config.posts.group_chat_reminder_text) == 0 and len(config.posts.hashtags) == 0:
             vk.wall.post(owner_id=-int(group), publish_date=publish_date, attachments=photos)
-            print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Post was published. Going to schedule next post.')
+            logger.info('Post was published. Going to schedule next post.')
         else:
             if int(round((publish_date % time.time()) / 60 / 60 / 24, 0)) % int(
-                    config['POSTS']['GROUP_CHAT_REMINDER']) == 0 and (p['count'] > 0 and (config['POSTS']['GROUP_CHAT_LINK'] not in p['items'][-1]['text'] and config['POSTS']['GROUP_CHAT_LINK'] not in p['items'][-2]['text'])):
+                    config.posts.group_chat_reminder) == 0 and (p['count'] > 0 and (config.posts.group_chat_link not in p['items'][-1]['text'] and config.posts.group_chat_link not in p['items'][-2]['text'])):
                 vk.wall.post(owner_id=-int(group),
-                             message=str(config['POSTS']['GROUP_CHAT_REMINDER_TEXT']).format(
-                                 config['POSTS']['GROUP_CHAT_LINK'], config['POSTS']['HASHTAGS'], '\n\n'),
+                             message=str(config.posts.group_chat_reminder_text).format(
+                                 config.posts.group_chat_link, config.posts.hashtags, '\n\n'),
                              publish_date=publish_date, attachments=photos)
-                print(Colors.OKGREEN + '[Info] ' + Colors.ENDC + 'Post about CHAT was published. Going to schedule next'
-                                                                 'post.')
+                logger.info('Post about CHAT was published. Going to schedule next post.')
             else:
                 vk.wall.post(owner_id=-int(group),
-                             message=random.choice(quotes_for_post) + '\n\n' + config['POSTS']['HASHTAGS'],
+                             message=random.choice(quotes_for_post) + '\n\n' + config.posts.hashtags,
                              publish_date=publish_date, attachments=photos)
-                print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Post was published. Going to schedule next post.')
+                logger.info('Post was published. Going to schedule next post.')
     except vk_api.exceptions.ApiError as e:
-        print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error: ' + str(e) + ', publish_date is ' + str(publish_date))
+        logger.error('Error: ' + str(e) + ', publish_date is ' + str(publish_date))
         return
     photos.clear()
-
-
-def log_with_timestamp(color, message):
-    """Helper function to print logs with timestamps and colors."""
-    print(f"{color}[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {Colors.ENDC}{message}")
 
 
 async def download_image(session: aiohttp.ClientSession, url: str, path: str, retries: int = 10) -> bool:
@@ -440,11 +368,11 @@ async def download_image(session: aiohttp.ClientSession, url: str, path: str, re
                 if resp.status == 200:
                     with open(path, 'wb') as f:
                         f.write(await resp.read())
-                    log_with_timestamp(Colors.OKGREEN, f"[Info] Downloaded: {path}")
+                    logger.info(f"Downloaded: {path}")
                     return True
-                log_with_timestamp(Colors.WARNING, f"[Warn] HTTP {resp.status}: {url} (attempt {attempt + 1}/{retries})")
+                logger.warning(f"HTTP {resp.status}: {url} (attempt {attempt + 1}/{retries})")
         except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-            log_with_timestamp(Colors.FAIL, f"[Error] Failed: {url} - {type(e).__name__} (attempt {attempt + 1}/{retries})")
+            logger.error(f"Failed: {url} - {type(e).__name__} (attempt {attempt + 1}/{retries})")
         await asyncio.sleep(1)
     return False
 
@@ -471,7 +399,7 @@ async def fetch_group_posts(
             lambda: vk.wall.get(owner_id=-int(group_id), count=1)
         ))['count']
     except Exception as e:
-        log_with_timestamp(Colors.FAIL, f"[Error] Failed to get wall length: {e}")
+        logger.error(f"Failed to get wall length: {e}")
         return []
 
     post_limit = min(max_posts, total_count) if max_posts else total_count
@@ -498,15 +426,12 @@ async def fetch_group_posts(
 
             all_posts.extend(posts['items'])
             offset += len(posts['items'])
-            log_with_timestamp(
-                Colors.OKGREEN,
-                f"[Info] Group {group_id}: loaded {len(all_posts)}/{post_limit} posts"
-            )
+            logger.info(f"Group {group_id}: loaded {len(all_posts)}/{post_limit} posts")
 
             await asyncio.sleep(0.5)  # Rate limiting
 
         except Exception as e:
-            log_with_timestamp(Colors.FAIL, f"[Error] Error loading posts (offset={offset}): {e}")
+            logger.error(f"Error loading posts (offset={offset}): {e}")
             break
 
     return all_posts
@@ -536,13 +461,9 @@ async def images_getter_async(
     timeout = aiohttp.ClientTimeout(total=60)
 
     async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-        for group in config['GROUPS']['GROUPS'].split(','):
-            group = group.strip()
-            if not group:
-                continue
-
-            log_with_timestamp(Colors.OKGREEN, f"[Info] Processing group {group}...")
-            posts = await fetch_group_posts(vk, group, max_posts=max_posts_per_group)
+        for group in config.groups.groups:
+            logger.info(f"Processing group {group}...")
+            posts = await fetch_group_posts(vk, str(group), max_posts=max_posts_per_group)
 
             if not posts:
                 continue
@@ -565,86 +486,10 @@ async def images_getter_async(
 
             results = await asyncio.gather(*tasks)
             success = sum(results)
-            log_with_timestamp(
-                Colors.OKGREEN if success == len(urls) else Colors.WARNING,
-                f"[Info] Group {group}: {success}/{len(urls)} images downloaded"
-            )
-
-
-def check_for_duplicates(folder: str, similarity_threshold: int = 5) -> None:
-    """
-    Remove broken images and duplicates using perceptual hashing with parallel processing.
-
-    Args:
-        folder: Path to directory with images
-        similarity_threshold: Max hash difference to consider images identical (0=exact match)
-    """
-    if not os.path.exists(folder):
-        log_with_timestamp(Colors.FAIL, f"Directory does not exist: {folder}")
-        return
-
-    hashes = {}
-    broken_files = []
-    duplicate_files = []
-
-    def process_file(file: str):
-        filepath = os.path.join(folder, file)
-        try:
-            with Image.open(filepath) as img:
-                if img.mode in ('RGBA', 'LA'):
-                    img = img.convert('RGB')
-                return file, imagehash.phash(img)
-        except (OSError, IOError, UnidentifiedImageError, ValueError) as e:
-            log_with_timestamp(Colors.WARNING, f"[Warn] Invalid image detected: {file} - {str(e)[:50]}...")
-            return file, None
-        except Exception as e:
-            log_with_timestamp(Colors.FAIL, f"[Error] Unexpected error processing {file}: {str(e)[:50]}...")
-            return file, None
-
-    try:
-        # First pass: parallel processing of all files
-        with ThreadPoolExecutor(max_workers=min(32, os.cpu_count() * 2 + 4)) as executor:
-            results = list(executor.map(process_file, os.listdir(folder)))
-
-        # Remove broken files
-        for file, _ in filter(lambda x: x[1] is None, results):
-            try:
-                os.remove(os.path.join(folder, file))
-                log_with_timestamp(Colors.WARNING, f"[Warn] Deleted invalid image: {file}")
-                broken_files.append(file)
-            except Exception as e:
-                log_with_timestamp(Colors.FAIL, f"[Error] Failed to delete {file}: {str(e)[:50]}...")
-
-        # Second pass: duplicate detection with threshold
-        hash_dict = {}
-        for file, img_hash in filter(lambda x: x[1] is not None, results):
-            is_duplicate = False
-            for existing_hash in hash_dict:
-                if img_hash - existing_hash <= similarity_threshold:
-                    duplicate_files.append(file)
-                    is_duplicate = True
-                    break
-            if not is_duplicate:
-                hash_dict[img_hash] = file
-
-        # Remove duplicates
-        for file in duplicate_files:
-            try:
-                os.remove(os.path.join(folder, file))
-                log_with_timestamp(Colors.WARNING, f"[Warn] Deleted duplicate: {file}")
-            except Exception as e:
-                log_with_timestamp(Colors.FAIL, f"[Error] Failed to delete duplicate {file}: {str(e)[:50]}...")
-
-        # Summary log
-        log_with_timestamp(
-            Colors.OKGREEN,
-            f"[Info] Cleanup completed. Removed {len(broken_files)} invalid and {len(duplicate_files)} duplicate images."
-        )
-
-    except Exception as e:
-        log_with_timestamp(Colors.FAIL, f"[Error] Fatal error during duplicate check: {str(e)}")
-
-
+            if success == len(urls):
+                logger.info(f"Group {group}: {success}/{len(urls)} images downloaded")
+            else:
+                logger.warning(f"Group {group}: {success}/{len(urls)} images downloaded")
 
 
 
@@ -658,7 +503,7 @@ def stories_publisher(folder, vk_session):
         width, height = image.size
         if height == 1080 and width <= 721:
             photo = open(folder + '/' + file, 'rb')
-            group = config['GROUPS']['YOUR_GROUP']
+            group = config.groups.your_group
             # Get an upload URL for a photo
             vk = vk_session.get_api()
             upload_server = vk.stories.getPhotoUploadServer(group_id=int(group), add_to_news=1)['upload_url']
@@ -668,23 +513,22 @@ def stories_publisher(folder, vk_session):
             try:
                 vk.stories.save(upload_results=response['response']['upload_result'])
             except vk_api.exceptions.ApiError as e:
-                print(Colors.FAIL + '[Error] ' + Colors.ENDC + str(e))
+                logger.error(str(e))
 
             os.remove(folder + '/' + file)
-            print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Story was published successfully.')
+            logger.info('Story was published successfully.')
             counter += 1
             if counter == 10:
                 break
 
 
 def community_members_analyser(vk_session, month, week, chart_folder):
-    group = config['GROUPS']['GROUP_TO_CHECK']
+    group = config.groups.group_to_check
     vk = vk_session.get_api()
     try:
         vk.groups.join(group_id=group)
     except vk_api.exceptions.ApiError:
-        print(Colors.WARNING + '[Warn]' + Colors.ENDC + ' Script tried to join community. You already part of the '
-                                                        'group or public.')
+        logger.warning('Script tried to join community. You already part of the group or public.')
     p = vk.groups.getMembers(group_id=int(group), offset=0, count=1)
 
     iter_count = int(math.ceil((float(p['count']) / 1000)))
@@ -728,28 +572,25 @@ def community_members_analyser(vk_session, month, week, chart_folder):
         year_count += 1
     dates.update({0: bdate_missing})
 
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Total amount of users: ' + str(total_amount_of_participants))
+    logger.info('Total amount of users: ' + str(total_amount_of_participants))
 
     female_ptg = float(female / total_amount_of_participants) * 100
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Female percentage of users: ' + str(female_ptg))
+    logger.info('Female percentage of users: ' + str(female_ptg))
 
     male_ptg = float(male / total_amount_of_participants) * 100
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Male percentage of users: ' + str(male_ptg))
+    logger.info('Male percentage of users: ' + str(male_ptg))
 
     inactive_month_ptg = float(inactive_month / total_amount_of_participants) * 100
-    print('{0}[Info]{1} Inactive from last month percentage of users: {2}'.format(Colors.OKGREEN, Colors.ENDC,
-                                                                                  str(inactive_month_ptg)))
+    logger.info('Inactive from last month percentage of users: ' + str(inactive_month_ptg))
 
     inactive_week_ptg = float(inactive_week / total_amount_of_participants) * 100
-    print('{0}[Info]{1} Inactive from last week percentage of users: {2}'.format(Colors.OKGREEN, Colors.ENDC,
-                                                                                 str(inactive_week_ptg)))
+    logger.info('Inactive from last week percentage of users: ' + str(inactive_week_ptg))
 
     time_undefined_ptg = float(time_undefined / total_amount_of_participants) * 100
-    print("{0}[Info]{1} Can't determine activity of users in percentage: {2}".format(Colors.OKGREEN, Colors.ENDC,
-                                                                                     str(time_undefined_ptg)))
+    logger.info('Can\'t determine activity of users in percentage: ' + str(time_undefined_ptg))
 
     active_users_ptg = float(active_time / total_amount_of_participants) * 100
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Active users in percentage: ' + str(active_users_ptg))
+    logger.info('Active users in percentage: ' + str(active_users_ptg))
 
     if not os.path.isdir(chart_folder):
         os.mkdir(chart_folder)
@@ -817,14 +658,14 @@ def community_members_analyser(vk_session, month, week, chart_folder):
 
 
 def community_posts_analyser(vk_session, time_shift, chart_folder):
-    group = config['GROUPS']['GROUP_TO_CHECK']
+    group = config.groups.group_to_check
     tools = vk_api.VkTools(vk_session)
     posts_info = {'date-views': [], 'date-likes': [], 'date-reposts': []}
     historical_posts_info = {'date-views': [], 'date-likes': [], 'date-reposts': []}
-    print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Starting analysis of the posts.')
+    logger.info('Starting analysis of the posts.')
     try:
         wall = tools.get_all('wall.get', 10, {'owner_id': -int(group)})
-        print(Colors.OKGREEN + '[Info]' + Colors.ENDC + ' Total amount of the posts is ' + str(wall['count']))
+        logger.info('Total amount of the posts is ' + str(wall['count']))
         for post in range(wall['count']):
             if wall['items'][post]['date'] >= time_shift:
                 posts_info['date-views'].append(
@@ -841,10 +682,9 @@ def community_posts_analyser(vk_session, time_shift, chart_folder):
                 historical_posts_info['date-reposts'].append(
                     str(wall['items'][post]['date']) + ',' + str(wall['items'][post]['reposts']['count']))
             except KeyError as e:
-                print('{0}[Error]{1} Post {2} have an error while processing: {3}'.format(Colors.FAIL, Colors.ENDC, str(
-                    wall['items'][post]['date']), str(e)))
+                logger.error('Post ' + str(wall['items'][post]['date']) + ' have an error while processing: ' + str(e))
     except vk_api.exceptions.ApiError as e:
-        print(Colors.FAIL + '[Error]' + Colors.ENDC + ' Error: ' + str(e))
+        logger.error('Error: ' + str(e))
 
     if not os.path.isdir(chart_folder):
         os.mkdir(chart_folder)
