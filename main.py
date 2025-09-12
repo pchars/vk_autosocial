@@ -4,8 +4,9 @@ import os
 import random
 import time
 from datetime import datetime
-from typing import List, Dict, Optional
 from pathlib import Path
+from typing import List, Dict, Optional
+
 import aiohttp
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -14,8 +15,8 @@ import seaborn as sns
 import vk_api
 from PIL import Image
 
-from utils import AppConfig, setup_logging, get_logger, OSManagement
 from api.vk_auth import VKAuth
+from utils import AppConfig, setup_logging, get_logger, OSManagement
 from vk_autosocial.build.lib.services.image_processor import ImageProcessor
 
 config = AppConfig.from_cfg_file()
@@ -38,7 +39,8 @@ def main():
     month = int(time.time() - 2678400)  # current time minus 31 day
     week = int(time.time() - 604800)  # current time minus one week
 
-    vk_auth = VKAuth(phone_number=config.auth.phone_number, password=config.auth.password, api_version=config.auth.api_version)
+    vk_auth = VKAuth(phone_number=config.auth.phone_number, password=config.auth.password,
+                     api_version=config.auth.api_version)
 
     try:
         vk_session = vk_auth.session_maker()
@@ -60,7 +62,6 @@ def main():
     # stories_publisher(folder_name, vk_session)
 
     post_publisher(str(folder_name), vk_session, time_delay=14400)
-    #post_publisher(folder_name, vk_session)
     # wall_cleaner(vk_session)
 
     # Page Management
@@ -135,7 +136,8 @@ def friends_list_cleaner(vk_session, time_shift):
                         logger.error('Error occurred: ' + str(error))
         logger.info(str(count_of_deleted_users) + ' deactivated and inactive friends were moved to subscribers.')
         if len(problem_ids_list) > 0:
-            logger.info(str(len(problem_ids_list)) + ' problem user(s) was/were not deleted from friends list, find list below.')
+            logger.info(str(len(
+                problem_ids_list)) + ' problem user(s) was/were not deleted from friends list, find list below.')
             logger.info('ID(s): ' + str(problem_ids_list))
     except vk_api.exceptions.ApiError as error:
         if 'User authorization failed' in str(error):
@@ -167,7 +169,8 @@ def subscription_cleaner(vk_session):
                     logger.error('Error occurred: ' + str(error))
         logger.info(str(count_of_deleted_users) + ' subscriptions were deleted.')
         if len(problem_ids_list) > 0:
-            logger.info(str(len(problem_ids_list)) + ' problem user(s) was/were not deleted from subscription list, find list below.')
+            logger.info(str(len(
+                problem_ids_list)) + ' problem user(s) was/were not deleted from subscription list, find list below.')
             logger.info('ID(s): ' + str(problem_ids_list))
     except vk_api.exceptions.ApiError as error:
         if 'User authorization failed' in str(error):
@@ -260,59 +263,66 @@ def wall_cleaner(vk_session, delete_postponed: bool = True, delete_published: bo
 def post_publisher(folder, vk_session, time_delay=28800):
     logger.info('Starting publication of posts.')
     group = config.groups.your_group
-
-    # Get an upload URL for a photo
     vk = vk_session.get_api()
-    upload_url = vk.photos.getWallUploadServer(group_id=int(group))['upload_url']
-    photos, image_counter = [], 1
 
-    # Identify Delay timer
+    # Getting upload_url one time for further usage
+    upload_url = vk.photos.getWallUploadServer(group_id=int(group))['upload_url']
+    # HTTP Session establishing for the POST requests
+    session = requests.Session()
+
+    photos, image_counter = [], 1
     delay = time_delay
 
-    # Use time of last postponed post instead of NOW in case we have postponed posts
-    dates = []
-    p = vk.wall.get(owner_id=-int(group), filter='postponed')
-    if p['count'] > 0:
-        for item in p['items']:
-            dates.append(item['date'])
-        dates.sort()
-        now = int(dates[-1]) + delay
-        logger.info('Group already contains some postponed posts, first post will be published at ' + str(now))
-    else:
-        # Set start time in seconds
-        if config.posts.start_time == '':
-            now = time.time()
-            logger.info('There is no postponed posts in the group and config is not configured, I\'m taking current time for first post: ' + str(now))
+    # Determining time for the postponed posts
+    try:
+        postponed = vk.wall.get(owner_id=-int(group), filter='postponed')
+        if postponed['count'] > 0:
+            dates = sorted(item['date'] for item in postponed['items'])
+            now = int(dates[-1]) + delay
+            logger.info(f'Using last postponed post time: {now}')
         else:
-            now = float(config.posts.start_time)
-            logger.info('There is no postponed posts in the group, I\'m taking time from the config: ' + str(now))
+            now = float(config.posts.start_time) if config.posts.start_time else time.time()
+            logger.info(f'Using config or current time: {now}')
+    except Exception as e:
+        logger.error(f'Failed to fetch postponed posts: {e}')
+        now = time.time()
 
-    # Upload the photo to the server
-
-    for file in os.listdir(folder):
-        photo = open(folder + '/' + file, 'rb')
-        response = requests.post(upload_url, files={'photo': photo}).json()
-
-        # Save the photo to the server and get the photo ID
+    # Uploading and publishing images
+    for file_name in os.listdir(folder):
+        file_path = os.path.join(folder, file_name)
         try:
-            vk_photo = vk.photos.saveWallPhoto(group_id=int(group), server=response['server'], photo=response['photo'],
-                                               hash=response['hash'])[0]
+            with open(file_path, 'rb') as photo:
+                response = session.post(upload_url, files={'photo': photo}).json()
+        except Exception as e:
+            logger.error(f'Failed to upload {file_name}: {e}')
+            continue
+
+        try:
+            vk_photo = vk.photos.saveWallPhoto(
+                group_id=int(group),
+                server=response['server'],
+                photo=response['photo'],
+                hash=response['hash']
+            )[0]
         except vk_api.exceptions.ApiError as error_msg:
             if "flood" in str(error_msg).lower():
-                logger.warning('Limit for adding postponed posts was reached.')
+                logger.warning('Flood control triggered. Stopping.')
                 break
             else:
-                logger.error('Unexpected error was occur. Error: ' + str(error_msg))
+                logger.error(f'VK API error: {error_msg}')
+                continue
 
         photo_id = f"photo{vk_photo['owner_id']}_{vk_photo['id']}"
-        if len(photos) < 6:
-            photos.append(photo_id)
-        elif len(photos) == 6:
+        photos.append(photo_id)
+
+        if len(photos) == 6:
             post_maker(delay, group, now, photos, vk)
             delay += time_delay
-        os.remove(folder + '/' + file)
-    logger.info('Finished preparing postponed posts.')
+            photos.clear()
 
+        os.remove(file_path)
+
+    logger.info('Finished preparing postponed posts.')
 
 
 def delete_duplicates_from_text_db(db_text_file=config.posts.text):
@@ -343,7 +353,9 @@ def post_maker(delay, group, start_time, photos, vk):
             logger.info('Post was published. Going to schedule next post.')
         else:
             if int(round((publish_date % time.time()) / 60 / 60 / 24, 0)) % int(
-                    config.posts.group_chat_reminder) == 0 and (p['count'] > 0 and (config.posts.group_chat_link not in p['items'][-1]['text'] and config.posts.group_chat_link not in p['items'][-2]['text'])):
+                    config.posts.group_chat_reminder) == 0 and (p['count'] > 0 and (
+                    config.posts.group_chat_link not in p['items'][-1]['text'] and config.posts.group_chat_link not in
+                    p['items'][-2]['text'])):
                 vk.wall.post(owner_id=-int(group),
                              message=str(config.posts.group_chat_reminder_text).format(
                                  config.posts.group_chat_link, config.posts.hashtags, '\n\n'),
@@ -490,7 +502,6 @@ async def images_getter_async(
                 logger.info(f"Group {group}: {success}/{len(urls)} images downloaded")
             else:
                 logger.warning(f"Group {group}: {success}/{len(urls)} images downloaded")
-
 
 
 def stories_publisher(folder, vk_session):
