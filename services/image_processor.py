@@ -51,7 +51,7 @@ class ImageProcessor:
                     logger.warning(f"Deleted invalid image: {file.name}")
                     broken_files.append(file)
                 except Exception as e:
-                    logger.error(f"Failed to delete {file.name}: {str(e)[:50]}...")
+                    logger.error(f"Failed to delete {file.name}: {str(e)}")
 
             # Duplicate detection
             hash_dict = {}
@@ -71,7 +71,7 @@ class ImageProcessor:
                     file.unlink()
                     logger.warning(f"Deleted duplicate: {file.name}")
                 except Exception as e:
-                    logger.error(f"Failed to delete duplicate {file.name}: {str(e)[:50]}...")
+                    logger.error(f"Failed to delete duplicate {file.name}: {str(e)}")
 
             logger.info(
                 f"Cleanup completed. Removed {len(broken_files)} invalid and {len(duplicate_files)} duplicate images.")
