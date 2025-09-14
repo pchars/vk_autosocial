@@ -15,9 +15,9 @@ import seaborn as sns
 import vk_api
 from PIL import Image
 
-from api.vk_auth import VKAuth
+from api import VKAuth, VKClient
 from utils import AppConfig, setup_logging, get_logger, OSManagement
-from vk_autosocial.build.lib.services.image_processor import ImageProcessor
+from services import ImageProcessor, PersonalPageManager
 
 config = AppConfig.from_cfg_file()
 setup_logging(
@@ -48,69 +48,35 @@ def main():
         logger.error(f"Failed to create VK session: {e}")
         return
 
+    vk_client = VKClient(vk_session)
+
+    pp_manager = PersonalPageManager(vk_client)
+
+
     # Public Management
-    if os.name == 'nt':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(images_getter_async(
-        folder=str(folder_name),
-        vk_session=vk_session,
-        max_posts_per_group=100,  # Set to None for no limit
-        max_concurrent=10
-    ))
+    # if os.name == 'nt':
+    #     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    # asyncio.run(images_getter_async(
+    #     folder=str(folder_name),
+    #     vk_session=vk_session,
+    #     max_posts_per_group=100,  # Set to None for no limit
+    #     max_concurrent=10
+    # ))
     image_processing = ImageProcessor(similarity_threshold=5, folder_path=folder_name)
     image_processing.check_for_duplicates(folder_name)
     # stories_publisher(folder_name, vk_session)
 
-    post_publisher(str(folder_name), vk_session, time_delay=14400)
+    # post_publisher(str(folder_name), vk_session, time_delay=14400)
     # wall_cleaner(vk_session)
 
-    # Page Management
+    # Personal Page Management
     # friends_list_cleaner(vk_session, week)
     # subscription_cleaner(vk_session)
     sex = 1  # gender for friends adder, 1 - female, 2 - male
-    # friends_adder(vk_session, month, sex)  # Add friends from GROUPS variable by gender and activity
-
+    asyncio.run(pp_manager.friends_adder(month, sex)) # Add friends from GROUPS variable by gender and activity
     # Communities analysing
     # community_members_analyser(vk_session, month, week, chart_folder)
     # community_posts_analyser(vk_session, week, chart_folder)
-
-
-# TODO fix case when you're not member of the group "Error: [203] Access to group denied: access to the group is denied."
-def friends_adder(vk_session, time_shift, sex):
-    # Get the list of friend friends users
-    api = vk_session.get_api()
-    count = 0
-    flood_count = 0
-    # Iterate over the list of these users
-    # TODO do the testing with these two groups GROUPS=214580081,188503062
-
-    # for group in config['GROUPS']['GROUPS'].split(','):
-    for group in config.groups.groups:
-        try:
-            response = api.groups.getMembers(group_id=group, fields='sex, last_seen')
-            if len(response["items"]) != 0:
-                for user in response["items"]:
-                    # add users by gender and send invites only to active users
-                    if user['sex'] == sex and ('last_seen' in user.keys() and user['last_seen']['time'] >= time_shift):
-                        # Add the user to friends
-                        api.friends.add(user_id=user["id"])
-                        count += 1
-            else:
-                logger.warning('No users found in the group.')
-        except vk_api.exceptions.ApiError as api_err:
-            if "flood" in str(api_err).lower():
-                logger.warning('Limit for adding friends was reached.')
-                flood_count += 1
-                if flood_count >= 3:
-                    break
-            elif "blacklist" in str(api_err).lower():
-                logger.error('Unexpected error was occur. Error: ' + str(api_err))
-                continue
-        if flood_count >= 3:
-            break
-        if count > 250:
-            break
-    logger.info('Requests to ' + str(count) + ' people(s) were sent.')
 
 
 def friends_list_cleaner(vk_session, time_shift):
@@ -359,12 +325,12 @@ def post_maker(delay, group, start_time, photos, vk):
                 vk.wall.post(owner_id=-int(group),
                              message=str(config.posts.group_chat_reminder_text).format(
                                  config.posts.group_chat_link, config.posts.hashtags, '\n\n'),
-                             publish_date=publish_date, attachments=photos)
+                             publish_date=publish_date, attachments=photos, primary_attachments_mode='grid')
                 logger.info('Post about CHAT was published. Going to schedule next post.')
             else:
                 vk.wall.post(owner_id=-int(group),
                              message=random.choice(quotes_for_post) + '\n\n' + config.posts.hashtags,
-                             publish_date=publish_date, attachments=photos)
+                             publish_date=publish_date, attachments=photos, primary_attachments_mode='grid')
                 logger.info('Post was published. Going to schedule next post.')
     except vk_api.exceptions.ApiError as e:
         logger.error('Error: ' + str(e) + ', publish_date is ' + str(publish_date))
