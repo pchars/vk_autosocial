@@ -30,28 +30,42 @@ logger.info("Application started successfully!")
 
 
 def main():
-    folder_name = Path('images')
-    folder = OSManagement(folder_path=folder_name)
-    if folder.is_folder_exists():
-        logger.info(f"Folder {folder_name} is ready to use")
-
-    chart_folder = 'charts'
-    month = int(time.time() - 2678400)  # current time minus 31 day
-    week = int(time.time() - 604800)  # current time minus one week
-
-    vk_auth = VKAuth(phone_number=config.auth.phone_number, password=config.auth.password,
-                     api_version=config.auth.api_version)
-
     try:
+        folder_name = Path('images')
+        folder = OSManagement(folder_path=folder_name)
+        if folder.is_folder_exists():
+            logger.info(f"Folder {folder_name} is ready to use")
+
+        chart_folder = 'charts'
+        # Constants
+        week = int(time.time() - 604800)  # current time minus one week
+        month = int(time.time() - 2678400)  # 31 день назад
+        sex = 1  # gender for friends adder, 1 - female, 2 - male
+
+        vk_auth = VKAuth(
+            phone_number=config.auth.phone_number,
+            password=config.auth.password,
+            api_version=config.auth.api_version
+        )
+
         vk_session = vk_auth.session_maker()
+        vk_client = VKClient(vk_session)
+        pp_manager = PersonalPageManager(vk_client)
+
+        # Public Management
+        image_processing = ImageProcessor(similarity_threshold=5, folder_path=folder_name)
+        image_processing.check_for_duplicates(folder_name)
+
+        # Personal Page Management
+        # Friends cleaning
+        removal_stats = asyncio.run(pp_manager.friends_remover(month))
+        logger.info(f"Friend cleanup completed: {removal_stats['deleted_count']} removed")
+        # Friends adder
+        asyncio.run(pp_manager.friends_adder(month, sex)) # Add friends from GROUPS variable by gender and activity
+        logger.info(f"Friend adding completed")
     except Exception as e:
-        logger.error(f"Failed to create VK session: {e}")
+        logger.error(f"Main execution failed: {e}")
         return
-
-    vk_client = VKClient(vk_session)
-
-    pp_manager = PersonalPageManager(vk_client)
-
 
     # Public Management
     # if os.name == 'nt':
@@ -62,56 +76,18 @@ def main():
     #     max_posts_per_group=100,  # Set to None for no limit
     #     max_concurrent=10
     # ))
-    image_processing = ImageProcessor(similarity_threshold=5, folder_path=folder_name)
-    image_processing.check_for_duplicates(folder_name)
+
     # stories_publisher(folder_name, vk_session)
 
     # post_publisher(str(folder_name), vk_session, time_delay=14400)
     # wall_cleaner(vk_session)
 
     # Personal Page Management
-    # friends_list_cleaner(vk_session, week)
     # subscription_cleaner(vk_session)
-    sex = 1  # gender for friends adder, 1 - female, 2 - male
-    asyncio.run(pp_manager.friends_adder(month, sex)) # Add friends from GROUPS variable by gender and activity
+
     # Communities analysing
     # community_members_analyser(vk_session, month, week, chart_folder)
     # community_posts_analyser(vk_session, week, chart_folder)
-
-
-def friends_list_cleaner(vk_session, time_shift):
-    # Get the list of blocked users
-    api = vk_session.get_api()
-    count_of_deleted_users = 0
-    problem_ids_list = []
-
-    try:
-        response = api.friends.get(fields="deactivated, last_seen")
-        # Iterate over the list of blocked users
-        for user in response["items"]:
-            if user.get("deactivated") or ('last_seen' in user.keys() and user.get("last_seen")['time'] <= time_shift):
-                # Delete the user from friends
-                try:
-                    api.friends.delete(user_id=user["id"])
-                    count_of_deleted_users += 1
-                except vk_api.exceptions.ApiError as error:
-                    if "No friend or friend request found" in str(error):
-                        logger.error('Error occurred: ' + str(error))
-                        problem_ids_list.append(user["id"])
-                    else:
-                        logger.error('Error occurred: ' + str(error))
-        logger.info(str(count_of_deleted_users) + ' deactivated and inactive friends were moved to subscribers.')
-        if len(problem_ids_list) > 0:
-            logger.info(str(len(
-                problem_ids_list)) + ' problem user(s) was/were not deleted from friends list, find list below.')
-            logger.info('ID(s): ' + str(problem_ids_list))
-    except vk_api.exceptions.ApiError as error:
-        if 'User authorization failed' in str(error):
-            logger.error('Error occurred: ' + str(error))
-            logger.warning('Trying to do re-auth.')
-            vk_session.auth(reauth=True)
-        else:
-            logger.error('Error occurred: ' + str(error))
 
 
 # TODO should be tested with values more than 1500
