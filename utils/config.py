@@ -34,6 +34,7 @@ class LoggingConfig:
     log_file: Optional[Path] = None
     console_output: bool = True
 
+
 @dataclass
 class AppConfig:
     auth: VKAuthConfig

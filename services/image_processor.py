@@ -1,10 +1,11 @@
 import os
-from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
-from PIL import Image, UnidentifiedImageError
-import imagehash
-from utils import get_logger, OSManagement
+from pathlib import Path
 from typing import Optional, Tuple
+
+import imagehash
+from PIL import Image, UnidentifiedImageError
+from utils import get_logger, OSManagement
 
 logger = get_logger(__name__)
 
@@ -78,7 +79,6 @@ class ImageProcessor:
 
         except Exception as e:
             logger.error(f"Fatal error during duplicate check: {str(e)}")
-
 
     @staticmethod
     def optimize_image(image_path: Path, max_size: tuple[int, int] = (1080, 1080)) -> None:

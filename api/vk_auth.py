@@ -4,6 +4,7 @@ from utils import get_logger
 
 logger = get_logger(__name__)
 
+
 class VKAuth:
     def __init__(self, phone_number: str, password: str, api_version: str):
         self.phone_number = phone_number
