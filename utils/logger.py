@@ -1,9 +1,9 @@
 import logging
 import sys
 from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Optional, Dict
-from enum import Enum
 
 
 class LogLevel(str, Enum):
@@ -27,6 +27,7 @@ LOG_LEVEL_MAPPING: Dict[str, int] = {
 # Fallback for the cases when general logging was not set up yet
 _fallback_logger = None
 
+
 def _get_fallback_logger() -> logging.Logger:
     """Creating temporary logger before init of the main one"""
     global _fallback_logger
@@ -39,6 +40,7 @@ def _get_fallback_logger() -> logging.Logger:
             _fallback_logger.addHandler(handler)
             _fallback_logger.setLevel(logging.INFO)
     return _fallback_logger
+
 
 def get_log_level_from_string(level_str: str) -> int:
     """
@@ -77,7 +79,8 @@ def get_log_level_from_string(level_str: str) -> int:
     raise ValueError(f"Unknown log level: {level_str}. Supported levels: {list(LOG_LEVEL_MAPPING.keys())}")
 
 
-def setup_logging(log_level: str = "info", log_file: Optional[Path] = None, console_output: bool = True) -> logging.Logger:
+def setup_logging(log_level: str = "info", log_file: Optional[Path] = None,
+                  console_output: bool = True) -> logging.Logger:
     """
     Logging configuration
 

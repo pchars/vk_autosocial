@@ -16,8 +16,8 @@ import vk_api
 from PIL import Image
 
 from api import VKAuth, VKClient
+from services import ImageProcessor, PersonalPageManager, ContentManager
 from utils import AppConfig, setup_logging, get_logger, OSManagement
-from services import ImageProcessor, PersonalPageManager
 
 config = AppConfig.from_cfg_file()
 setup_logging(
@@ -51,18 +51,28 @@ def main():
         vk_session = vk_auth.session_maker()
         vk_client = VKClient(vk_session)
         pp_manager = PersonalPageManager(vk_client)
+        c_manager = ContentManager(vk_client)
 
         # Public Management
         image_processing = ImageProcessor(similarity_threshold=5, folder_path=folder_name)
         image_processing.check_for_duplicates(folder_name)
+        logger.info("Image processing for duplicates was completed")
+        # Wall cleaning
+        wall_cleanup_stats = asyncio.run(
+            c_manager.wall_cleaner(group_id=-config.groups.your_group, delete_postponed=True, delete_published=True))
+        logger.info(f"Wall cleanup completed: {wall_cleanup_stats['deleted_count']} removed")
 
         # Personal Page Management
         # Friends cleaning
-        removal_stats = asyncio.run(pp_manager.friends_remover(month))
-        logger.info(f"Friend cleanup completed: {removal_stats['deleted_count']} removed")
+        friends_removal_stats = asyncio.run(pp_manager.friends_remover(month))
+        logger.info(f"Friend cleanup completed: {friends_removal_stats['deleted_count']} removed")
         # Friends adder
-        asyncio.run(pp_manager.friends_adder(month, sex)) # Add friends from GROUPS variable by gender and activity
+        asyncio.run(pp_manager.friends_adder(month, sex))  # Add friends from GROUPS variable by gender and activity
         logger.info(f"Friend adding completed")
+        # Friends Requests cleaning
+        # 1 - requests which you sent to people, 0 - requests which people sent to you (your subscribers)
+        friends_requests_removal_stats = asyncio.run(pp_manager.friends_requests_remover(1))
+        logger.info(f"Friends requests cleanup completed: {friends_requests_removal_stats['deleted_count']} removed")
     except Exception as e:
         logger.error(f"Main execution failed: {e}")
         return
@@ -80,126 +90,10 @@ def main():
     # stories_publisher(folder_name, vk_session)
 
     # post_publisher(str(folder_name), vk_session, time_delay=14400)
-    # wall_cleaner(vk_session)
-
-    # Personal Page Management
-    # subscription_cleaner(vk_session)
 
     # Communities analysing
     # community_members_analyser(vk_session, month, week, chart_folder)
     # community_posts_analyser(vk_session, week, chart_folder)
-
-
-# TODO should be tested with values more than 1500
-def subscription_cleaner(vk_session):
-    # Get the list of blocked users
-    api = vk_session.get_api()
-    count_of_deleted_users = 0
-    problem_ids_list = []
-    try:
-        response = api.friends.getRequests(out=1, offset=0, count=1)
-        iter_count = int(math.ceil((float(response['count']) / 1000)))
-        for count in range(0, iter_count + 1):
-            response = api.friends.getRequests(out=1, offset=(iter_count - count) * 1000, count=1000)
-            # Iterate over the list of blocked users
-            for user in response["items"]:
-                # Delete the user from friends
-                try:
-                    api.friends.delete(user_id=user)
-                    count_of_deleted_users += 1
-                except vk_api.exceptions.ApiError as error:
-                    logger.error('Error occurred: ' + str(error))
-        logger.info(str(count_of_deleted_users) + ' subscriptions were deleted.')
-        if len(problem_ids_list) > 0:
-            logger.info(str(len(
-                problem_ids_list)) + ' problem user(s) was/were not deleted from subscription list, find list below.')
-            logger.info('ID(s): ' + str(problem_ids_list))
-    except vk_api.exceptions.ApiError as error:
-        if 'User authorization failed' in str(error):
-            logger.error(' Error occurred: ' + str(error))
-            logger.warning('Trying to do re-auth.')
-            vk_session.auth(reauth=True)
-        else:
-            logger.error(' Error occurred: ' + str(error))
-
-
-def wall_cleaner(vk_session, delete_postponed: bool = True, delete_published: bool = True):
-    """
-    Удаляет посты из группы с возможностью выбора типа
-
-    :param vk_session: Сессия VK API
-    :param delete_postponed: Удалять отложенные посты (по умолчанию True)
-    :param delete_published: Удалять опубликованные посты (по умолчанию True)
-    """
-    logger.info("Starting comprehensive wall cleanup")
-
-    group_id = -config.groups.your_group
-    vk = vk_session.get_api()
-    total_deleted = 0
-
-    def delete_posts(post_type: str):
-        nonlocal total_deleted
-        offset = 0
-        count = 100  # Максимальное значение для одного запроса
-
-        while True:
-            try:
-                # Получаем посты пачками
-                response = vk.wall.get(
-                    owner_id=group_id,
-                    filter=post_type if post_type else 'all',
-                    count=count,
-                    offset=offset
-                )
-
-                if not response['items']:
-                    break
-
-                # Удаляем в обратном порядке (от новых к старым)
-                for post in reversed(response['items']):
-                    try:
-                        result = vk.wall.delete(
-                            owner_id=group_id,
-                            post_id=post['id']
-                        )
-                        if result == 1:
-                            logger.info(f"Deleted post {post['id']}")
-                            total_deleted += 1
-                        else:
-                            logger.error(f"Failed to delete post {post['id']}")
-
-                        # Задержка для избежания флуд-контроля
-                        time.sleep(0.35)
-
-                    except vk_api.ApiError as e:
-                        if 'flood' in str(e).lower():
-                            logger.warning("Flood control triggered, pausing for 5 sec")
-                            time.sleep(5)
-                        else:
-                            logger.error(f"API Error: {str(e)}")
-                            break
-
-                offset += count
-
-            except Exception as e:
-                logger.error(f"Error: {str(e)}")
-                break
-
-    try:
-        # Удаляем отложенные посты
-        if delete_postponed:
-            logger.info("Removing postponed posts...")
-            delete_posts(post_type='postponed')
-
-        # Удаляем опубликованные посты
-        if delete_published:
-            logger.info("Removing published posts...")
-            delete_posts(post_type='owner')
-
-    except Exception as e:
-        logger.error(f"Critical error: {str(e)}")
-
-    logger.info(f"Cleanup completed. Total deleted: {total_deleted}")
 
 
 def post_publisher(folder, vk_session, time_delay=28800):
@@ -331,12 +225,7 @@ async def download_image(session: aiohttp.ClientSession, url: str, path: str, re
     return False
 
 
-async def fetch_group_posts(
-        vk,
-        group_id: str,
-        max_posts: Optional[int] = None,
-        batch_size: int = 100
-) -> List[Dict]:
+async def fetch_group_posts(vk, group_id: str, max_posts: Optional[int] = None, batch_size: int = 100) -> List[Dict]:
     """
     Fetch posts from VK group with pagination.
 
@@ -391,12 +280,8 @@ async def fetch_group_posts(
     return all_posts
 
 
-async def images_getter_async(
-        folder: str,
-        vk_session,
-        max_posts_per_group: Optional[int] = None,
-        max_concurrent: int = 10
-) -> None:
+async def images_getter_async(folder: str, vk_session, max_posts_per_group: Optional[int] = None,
+                              max_concurrent: int = 10) -> None:
     """
     Main downloader function with configurable limits.
 
