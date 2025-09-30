@@ -10,3 +10,4 @@ olefile>=0.46
 beautifulsoup4
 requests>=2.20.0,<3.0.0
 websocket-client
+coverage
