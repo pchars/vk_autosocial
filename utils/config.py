@@ -27,13 +27,34 @@ class PostsConfig:
     hashtags: str = ""
     group_chat_reminder_text: str = ""
 
+    def get_text_file_path(self, base_dir: Path = None) -> Path:
+        """Возвращает абсолютный путь к файлу с текстами"""
+        if not self.text:
+            raise ValueError("Text file path is not configured")
+
+        text_path = Path(self.text)
+
+        # Если путь абсолютный - возвращаем как есть
+        if text_path.is_absolute():
+            return text_path
+
+        # Если путь относительный - делаем абсолютным относительно base_dir
+        if base_dir is None:
+            base_dir = Path.cwd()
+
+        return base_dir / text_path
 
 @dataclass
 class LoggingConfig:
     log_level: str = "info"
     log_file: Optional[Path] = None
+    log_folder: Optional[Path] = None
     console_output: bool = True
 
+@dataclass
+class FoldersConfig:
+    image_folder: Path = "images"
+    chart_folder: Path = "charts"
 
 @dataclass
 class AppConfig:
@@ -41,6 +62,7 @@ class AppConfig:
     groups: GroupsConfig
     posts: PostsConfig
     logging: LoggingConfig
+    folders: FoldersConfig
 
     @classmethod
     def from_cfg_file(cls, cfg_path: Path = Path("conf.cfg")):
@@ -73,6 +95,11 @@ class AppConfig:
             logging=LoggingConfig(
                 log_level=log_section.get('LOG_LEVEL', 'info'),
                 log_file=Path(log_section['LOG_FILE']) if 'LOG_FILE' in log_section else None,
+                log_folder=Path(log_section['LOG_FOLDER']) if 'LOG_FOLDER' in log_section else None,
                 console_output=log_section.getboolean('CONSOLE_OUTPUT', True)
+            ),
+            folders=FoldersConfig(
+                image_folder=Path(config['FOLDERS']['IMAGE_FOLDER']),
+                chart_folder=Path(config['FOLDERS']['CHART_FOLDER'])
             )
         )

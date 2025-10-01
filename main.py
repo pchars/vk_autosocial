@@ -1,7 +1,6 @@
 import asyncio
 import math
 import os
-import random
 import time
 from datetime import datetime
 from pathlib import Path
@@ -16,13 +15,13 @@ import vk_api
 from PIL import Image
 
 from api import VKAuth, VKClient
-from services import ImageProcessor, PersonalPageManager, ContentManager
+from services import PersonalPageManager, ContentManager
 from utils import AppConfig, setup_logging, get_logger, OSManagement
 
 config = AppConfig.from_cfg_file()
 setup_logging(
     log_level=config.logging.log_level,
-    log_file=config.logging.log_file,
+    log_file=Path(f"{config.logging.log_folder}/{config.logging.log_file}"),
     console_output=config.logging.console_output
 )
 logger = get_logger(__name__)
@@ -31,12 +30,15 @@ logger.info("Application started successfully!")
 
 def main():
     try:
-        folder_name = Path('images')
-        folder = OSManagement(folder_path=folder_name)
-        if folder.is_folder_exists():
-            logger.info(f"Folder {folder_name} is ready to use")
+        # Creating folders
+        folders = [
+            config.folders.image_folder,
+            config.logging.log_folder,
+            config.folders.chart_folder
+        ]
+        base_dir = Path(__file__).parent
+        text_file_path = config.posts.get_text_file_path(base_dir)
 
-        chart_folder = 'charts'
         # Constants
         week = int(time.time() - 604800)  # current time minus one week
         month = int(time.time() - 2678400)  # 31 день назад
@@ -48,40 +50,61 @@ def main():
             api_version=config.auth.api_version
         )
 
+        os_manager = OSManagement()
         vk_session = vk_auth.session_maker()
         vk_client = VKClient(vk_session)
         pp_manager = PersonalPageManager(vk_client)
         c_manager = ContentManager(vk_client)
 
-        # Public Management
-        image_processing = ImageProcessor(similarity_threshold=5, folder_path=folder_name)
-        image_processing.check_for_duplicates(folder_name)
-        logger.info("Image processing for duplicates was completed")
-        # Wall cleaning
-        wall_cleanup_stats = asyncio.run(
-            c_manager.wall_cleaner(group_id=-config.groups.your_group, delete_postponed=True, delete_published=True))
-        logger.info(f"Wall cleanup completed: {wall_cleanup_stats['deleted_count']} removed")
+        # Create all required folders
+        success = os_manager.ensure_multiple_folders(folders)
 
+        if success:
+            logger.info("All folders are ready to use")
+        else:
+            logger.warning("Some folders couldn't be created")
+
+        # Public Management
+
+        # image_processing = ImageProcessor(similarity_threshold=5, folder_path=config.folders.image_folder)
+        # image_processing.check_for_duplicates(config.folders.image_folder)
+        # logger.info("Image processing for duplicates was completed")
+        logger.info("Post scheduler was started")
+        asyncio.run(c_manager.post_publisher(
+            folder=config.folders.image_folder,
+            your_group=config.groups.your_group,
+            start_time=config.posts.start_time,
+            text=str(text_file_path)
+        ))
+        logger.info("All posts were scheduled")
+        # Wall cleaning
+        # wall_cleanup_stats = asyncio.run(
+        #     c_manager.wall_cleaner(group_id=-config.groups.your_group, delete_postponed=True, delete_published=True))
+        # logger.info(f"Wall cleanup completed: {wall_cleanup_stats['deleted_count']} removed")
+        #
         # Personal Page Management
         # Friends cleaning
-        friends_removal_stats = asyncio.run(pp_manager.friends_remover(month))
-        logger.info(f"Friend cleanup completed: {friends_removal_stats['deleted_count']} removed")
+        # friends_removal_stats = asyncio.run(pp_manager.friends_remover(month))
+        # logger.info(f"Friend cleanup completed: {friends_removal_stats['deleted_count']} removed")
         # Friends adder
-        asyncio.run(pp_manager.friends_adder(month, sex))  # Add friends from GROUPS variable by gender and activity
-        logger.info(f"Friend adding completed")
+        # asyncio.run(pp_manager.friends_adder(month, sex))  # Add friends from GROUPS variable by gender and activity
+        # logger.info(f"Friend adding completed")
         # Friends Requests cleaning
         # 1 - requests which you sent to people, 0 - requests which people sent to you (your subscribers)
-        friends_requests_removal_stats = asyncio.run(pp_manager.friends_requests_remover(1))
-        logger.info(f"Friends requests cleanup completed: {friends_requests_removal_stats['deleted_count']} removed")
+        # friends_requests_removal_stats = asyncio.run(pp_manager.friends_requests_remover(1))
+        # logger.info(f"Friends requests cleanup completed: {friends_requests_removal_stats['deleted_count']} removed")
     except Exception as e:
         logger.error(f"Main execution failed: {e}")
+        logger.error(f"Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return
 
     # Public Management
     # if os.name == 'nt':
     #     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     # asyncio.run(images_getter_async(
-    #     folder=str(folder_name),
+    #     folder=config.folders.image_folder,
     #     vk_session=vk_session,
     #     max_posts_per_group=100,  # Set to None for no limit
     #     max_concurrent=10
@@ -89,123 +112,9 @@ def main():
 
     # stories_publisher(folder_name, vk_session)
 
-    # post_publisher(str(folder_name), vk_session, time_delay=14400)
-
     # Communities analysing
     # community_members_analyser(vk_session, month, week, chart_folder)
     # community_posts_analyser(vk_session, week, chart_folder)
-
-
-def post_publisher(folder, vk_session, time_delay=28800):
-    logger.info('Starting publication of posts.')
-    group = config.groups.your_group
-    vk = vk_session.get_api()
-
-    # Getting upload_url one time for further usage
-    upload_url = vk.photos.getWallUploadServer(group_id=int(group))['upload_url']
-    # HTTP Session establishing for the POST requests
-    session = requests.Session()
-
-    photos, image_counter = [], 1
-    delay = time_delay
-
-    # Determining time for the postponed posts
-    try:
-        postponed = vk.wall.get(owner_id=-int(group), filter='postponed')
-        if postponed['count'] > 0:
-            dates = sorted(item['date'] for item in postponed['items'])
-            now = int(dates[-1]) + delay
-            logger.info(f'Using last postponed post time: {now}')
-        else:
-            now = float(config.posts.start_time) if config.posts.start_time else time.time()
-            logger.info(f'Using config or current time: {now}')
-    except Exception as e:
-        logger.error(f'Failed to fetch postponed posts: {e}')
-        now = time.time()
-
-    # Uploading and publishing images
-    for file_name in os.listdir(folder):
-        file_path = os.path.join(folder, file_name)
-        try:
-            with open(file_path, 'rb') as photo:
-                response = session.post(upload_url, files={'photo': photo}).json()
-        except Exception as e:
-            logger.error(f'Failed to upload {file_name}: {e}')
-            continue
-
-        try:
-            vk_photo = vk.photos.saveWallPhoto(
-                group_id=int(group),
-                server=response['server'],
-                photo=response['photo'],
-                hash=response['hash']
-            )[0]
-        except vk_api.exceptions.ApiError as error_msg:
-            if "flood" in str(error_msg).lower():
-                logger.warning('Flood control triggered. Stopping.')
-                break
-            else:
-                logger.error(f'VK API error: {error_msg}')
-                continue
-
-        photo_id = f"photo{vk_photo['owner_id']}_{vk_photo['id']}"
-        photos.append(photo_id)
-
-        if len(photos) == 6:
-            post_maker(delay, group, now, photos, vk)
-            delay += time_delay
-            photos.clear()
-
-        os.remove(file_path)
-
-    logger.info('Finished preparing postponed posts.')
-
-
-def delete_duplicates_from_text_db(db_text_file=config.posts.text):
-    real_lines = []
-    with open(db_text_file) as f:
-        lines = f.readlines()
-        for line in lines:
-            if "\"" in line:
-                line = line.replace('"', '')
-            if "    " in line:
-                line = line.replace("    ", "")
-            real_lines.append(line)
-
-        real_lines = list(set(real_lines))
-    return real_lines
-
-
-def post_maker(delay, group, start_time, photos, vk):
-    # Calculate the publishing date as a Unix timestamp
-    publish_date = int(start_time + delay)
-    db_text = config.posts.text
-    quotes_for_post = delete_duplicates_from_text_db(db_text)
-    try:
-        p = vk.wall.get(owner_id=-int(group), filter='postponed')
-        # Make a delayed post on the wall of a user or community
-        if len(config.posts.group_chat_reminder_text) == 0 and len(config.posts.hashtags) == 0:
-            vk.wall.post(owner_id=-int(group), publish_date=publish_date, attachments=photos)
-            logger.info('Post was published. Going to schedule next post.')
-        else:
-            if int(round((publish_date % time.time()) / 60 / 60 / 24, 0)) % int(
-                    config.posts.group_chat_reminder) == 0 and (p['count'] > 0 and (
-                    config.posts.group_chat_link not in p['items'][-1]['text'] and config.posts.group_chat_link not in
-                    p['items'][-2]['text'])):
-                vk.wall.post(owner_id=-int(group),
-                             message=str(config.posts.group_chat_reminder_text).format(
-                                 config.posts.group_chat_link, config.posts.hashtags, '\n\n'),
-                             publish_date=publish_date, attachments=photos, primary_attachments_mode='grid')
-                logger.info('Post about CHAT was published. Going to schedule next post.')
-            else:
-                vk.wall.post(owner_id=-int(group),
-                             message=random.choice(quotes_for_post) + '\n\n' + config.posts.hashtags,
-                             publish_date=publish_date, attachments=photos, primary_attachments_mode='grid')
-                logger.info('Post was published. Going to schedule next post.')
-    except vk_api.exceptions.ApiError as e:
-        logger.error('Error: ' + str(e) + ', publish_date is ' + str(publish_date))
-        return
-    photos.clear()
 
 
 async def download_image(session: aiohttp.ClientSession, url: str, path: str, retries: int = 10) -> bool:

@@ -101,19 +101,71 @@ class VKClient:
             logger.error(f"Unexpected error getting friends: {e}")
             return {}
 
-    async def put_post(self, group_id: str, message: str, attachments: List[str] = None) -> bool:
+    async def get_photos_wall_upload_server(self, group_id: str) -> Dict[str, Any]:
+        """Get wall upload server URL"""
+        logger.debug("Requesting wall upload server URL")
+
+        try:
+            response = await self._run_in_executor(
+                self.vk.photos.getWallUploadServer,
+                group_id=group_id
+            )
+
+            return response
+
+        except vk_api.exceptions.ApiError as api_error:
+            if 'User authorization failed' in str(api_error):
+                logger.error(f'VKAuth error occurred: {str(api_error)}')
+            else:
+                logger.error(f"VK API error getting wall upload server URL: {api_error}")
+            return {}
+        except Exception as e:
+            logger.error(f"Unexpected error getting wall upload server URL: {e}")
+            return {}
+
+    async def put_post(self, group_id: str, publish_date: str, message: str = "", attachments: List[str] = None,
+                       primary_attachments_mode: str = 'grid') -> bool:
         """Publish post to the wall"""
         try:
             result = await self._run_in_executor(
                 self.vk.wall.post,
                 owner_id=-int(group_id),
                 message=message,
-                attachments=attachments or []
+                attachments=attachments or [],
+                primary_attachments_mode=primary_attachments_mode,
+                publish_date=publish_date
             )
             return True
         except Exception as e:
             logger.error(f"Error publishing post: {e}")
             return False
+
+    async def put_photos_save_wall_photo(self, group_id: str, response: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Put uploaded photos to wall"""
+        logger.debug("Put uploaded photos to wall")
+        if not response or 'server' not in response or 'photo' not in response or 'hash' not in response:
+            logger.error(f"Invalid upload response: {response}")
+            return []
+        try:
+            photo = await self._run_in_executor(
+                self.vk.photos.saveWallPhoto,
+                group_id=group_id,
+                server=response['server'],
+                photo=response['photo'],
+                hash=response['hash']
+            )
+
+            return photo
+
+        except vk_api.exceptions.ApiError as api_error:
+            if 'User authorization failed' in str(api_error):
+                logger.error(f'VKAuth error occurred: {str(api_error)}')
+            else:
+                logger.error(f"VK API error putting uploaded photos to wall: {api_error}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error putting uploaded photos to wall: {e}")
+            return []
 
     async def add_friend(self, user_id: str) -> bool:
         """Invite a friend"""

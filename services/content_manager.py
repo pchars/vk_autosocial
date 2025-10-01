@@ -1,7 +1,11 @@
 import asyncio
-from typing import Dict, Any
+import random
+import time
+from pathlib import Path
+from typing import Dict, Any, List
 
-from utils import get_logger
+import requests
+from utils import get_logger, OSManagement, FileContentUtils
 
 logger = get_logger(__name__)
 
@@ -108,6 +112,128 @@ class ContentManager:
 
         logger.info(f"Wall cleanup completed. Total deleted: {stats['deleted_count']}")
         return stats
+
+    async def post_publisher(self, folder: Path, your_group: int, start_time: int, time_delay: int = 28800,
+                             max_photos: int = 6, group_chat_reminder_text: str = "", hashtags: str = "",
+                             group_chat_link: str = "",
+                             group_chat_reminder: int = 6, text: str = "db_text.txt") -> None:
+        logger.info('Starting publication of posts.')
+
+        os_manager = OSManagement()
+
+        image_files = os_manager.get_files_list(folder)
+        image_files = [f for f in image_files if f and f.exists()]
+
+        if not image_files:
+            logger.warning("No valid image files found to process")
+            return
+
+        # Getting upload_url one time for further usage
+        upload_server_response = await self.vk_client.get_photos_wall_upload_server(group_id=your_group)
+        upload_url = upload_server_response['upload_url']
+        logger.debug(f'getWallUploadServer method response: {upload_server_response}')
+        logger.debug(f'URL for uploading was determined: {upload_url}')
+
+        # HTTP Session establishing for the POST requests
+        session = requests.Session()
+
+        photos, image_counter = [], 1
+        delay = time_delay
+
+        # Determining time for the postponed posts
+        postponed = await self.vk_client.get_group_posts(group_id=-your_group, post_filter='postponed')
+        if postponed['count'] > 0:
+            dates = sorted(item['date'] for item in postponed['items'])
+            now = int(dates[-1]) + delay
+            logger.info(f'Using last postponed post time: {now}')
+        else:
+            now = float(start_time) if start_time else time.time()
+            logger.info(f'Using config or current time: {now}')
+
+        # Uploading and publishing images
+        for file in image_files:
+            logger.debug(f"Processing file: {file}")
+            if not file or not file.exists() or str(file).strip() == '':
+                logger.warning(f"Skipping invalid file path: {file}")
+                continue
+            try:
+                if not file.exists():
+                    logger.warning(f"File does not exist: {file}")
+                    continue
+
+                with open(file, 'rb') as photo:
+                    response = session.post(upload_url, files={'photo': photo}).json()
+                    logger.debug(f"Upload response: {response}")
+
+                if 'photo' not in response or response['photo'] == '':
+                    logger.error(f"Upload failed for {file.name}: {response}")
+                    continue
+
+                vk_photo_response = await self.vk_client.put_photos_save_wall_photo(group_id=your_group,
+                                                                                    response=response)
+                logger.debug(f"Save wall photo response: {vk_photo_response}")
+
+                if not vk_photo_response or len(vk_photo_response) == 0:
+                    logger.error(f"Failed to save photo for {file.name}")
+                    continue
+
+                vk_photo = vk_photo_response[0]
+                photo_id = f"photo{vk_photo['owner_id']}_{vk_photo['id']}"
+                photos.append(photo_id)
+
+                success = os_manager.delete_file(file)
+                if not success:
+                    logger.warning(f"Could not delete file: {file}")
+            except Exception as e:
+                logger.error(f'Failed to process {file}: {e}')
+                continue
+
+            if len(photos) == max_photos:
+                await self.post_maker(delay, your_group, now, photos, group_chat_reminder_text, hashtags,
+                                      group_chat_link, group_chat_reminder, text)
+                delay += time_delay
+                photos.clear()
+
+        logger.info('Finished preparing postponed posts.')
+        return
+
+    async def post_maker(self, delay: int, group: int, start_time: int, photos: List[Any],
+                         group_chat_reminder_text: str, hashtags: str, group_chat_link: str,
+                         group_chat_reminder: int, text: str) -> None:
+        if not photos or len(photos) == 0:
+            logger.warning("No photos to create post, skipping")
+            return
+
+        # Calculate the publishing date as a Unix timestamp
+        publish_date = start_time + delay
+
+        file_manipulation = FileContentUtils()
+
+        quotes_for_post = file_manipulation.delete_duplicates_from_text_db(text)
+
+        p = await self.vk_client.get_group_posts(group_id=-int(group), post_filter='postponed')
+        if len(group_chat_reminder_text) == 0 and len(hashtags) == 0:
+            await self.vk_client.put_post(group_id=group, publish_date=publish_date, attachments=photos)
+            logger.info('Post was published. Going to schedule next post.')
+        else:
+            if (int(round((publish_date % time.time()) / 60 / 60 / 24, 0)) % group_chat_reminder == 0 and
+                    (p['count'] > 0 and
+                     (group_chat_link not in p['items'][-1]['text'] and group_chat_link not in p['items'][-2][
+                         'text']))):
+                await self.vk_client.put_post(group_id=group,
+                                              publish_date=publish_date,
+                                              attachments=photos,
+                                              message=str(group_chat_reminder_text).format(group_chat_link, hashtags,
+                                                                                           '\n\n'))
+                logger.info('Post about CHAT was published. Going to schedule next post.')
+            else:
+                await self.vk_client.put_post(group_id=group,
+                                              publish_date=publish_date,
+                                              attachments=photos,
+                                              message=random.choice(quotes_for_post) + '\n\n' + hashtags)
+                logger.info('Post was published. Going to schedule next post.')
+
+        photos.clear()
 
     # WIP
     async def download_group_images(self, group_id: str, max_posts: int = 100):

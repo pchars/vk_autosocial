@@ -19,7 +19,8 @@ setup(
         'seaborn>=0.13.0,<0.14.0',
         'vk-api>=11.9.0,<12.0.0',
         'configparser>=5.3.0,<6.0.0',
-        'olefile>=0.46'
+        'olefile>=0.46',
+        'coverage'
     ],
     python_requires='>=3.10',
 )

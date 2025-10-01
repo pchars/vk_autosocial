@@ -19,8 +19,8 @@ class ImageProcessor:
         """
         Remove broken images and duplicates using perceptual hashing
         """
-        folder_manager = OSManagement(folder_path=self.folder_path)
-        if folder_manager.is_folder_exists():
+        folder_manager = OSManagement()
+        if folder_manager.is_folder_exists(folder_path=folder):
             logger.info(f"Folder {self.folder_path} is ready to use")
 
         broken_files = []
