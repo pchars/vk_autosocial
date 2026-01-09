@@ -72,7 +72,6 @@ jobs:
           echo "**Python Version**: $(python --version)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Get installed packages
           python -m pip list --format=freeze > /tmp/installed_packages.txt
           PACKAGE_COUNT=$(grep -c "==" /tmp/installed_packages.txt || echo "0")
           
@@ -86,24 +85,45 @@ jobs:
             
             echo "### safety scan:" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            python -m safety scan -r /tmp/installed_packages.txt --json 2>/dev/null | python3 -c "
-import json, sys
+            
+            # Create Python script for safety output parsing
+            cat > /tmp/parse_safety.py << 'EOF'
+import json
+import sys
+
 try:
-    data = json.load(sys.stdin)
-    if 'vulnerabilities' in data:
-        vulns = data['vulnerabilities']
-        if vulns:
-            for v in vulns:
-                print(f'✗ {v.get(\"package_name\", \"?\")} {v.get(\"analyzed_version\", \"?\")}')
-                print(f'  Severity: {v.get(\"severity\", \"?\")}')
-                print(f'  CVE: {v.get(\"CVE\", \"?\")}')
-        else:
-            print('✅ No vulnerabilities found')
+    import subprocess
+    result = subprocess.run(
+        ['python', '-m', 'safety', 'scan', '-r', '/tmp/installed_packages.txt', '--json'],
+        capture_output=True,
+        text=True
+    )
+    
+    if result.returncode == 0 or result.stdout:
+        try:
+            data = json.loads(result.stdout)
+            if 'vulnerabilities' in data:
+                vulns = data['vulnerabilities']
+                if vulns:
+                    for v in vulns:
+                        print(f"✗ {v.get('package_name', '?')} {v.get('analyzed_version', '?')}")
+                        print(f"  Severity: {v.get('severity', '?')}")
+                        cve = v.get('CVE') or v.get('vulnerability_id', '?')
+                        print(f"  CVE: {cve}")
+                else:
+                    print("✅ No vulnerabilities found")
+            else:
+                print("✅ Safety scan completed")
+        except json.JSONDecodeError:
+            print("⚠️ Safety scan completed (no JSON output)")
     else:
-        print('✅ Safety scan completed')
-except:
-    print('⚠️ Safety scan completed')
-" >> $GITHUB_STEP_SUMMARY || echo "safety scan completed" >> $GITHUB_STEP_SUMMARY
+        print("⚠️ Safety command failed")
+        
+except Exception as e:
+    print(f"⚠️ Error during safety scan: {str(e)}")
+EOF
+            
+            python /tmp/parse_safety.py >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             
             echo "## 📋 Summary" >> $GITHUB_STEP_SUMMARY
@@ -133,4 +153,4 @@ except:
           path: |
             requirements_exact.txt
             requirements.txt
-          retention-days: 30
+          retention-days: 7
