@@ -17,8 +17,8 @@ on:
     inputs:
       severity:
         description: 'Minimum severity level to fail on'
-        required: false
-        default: 'moderate'
+        required: true
+        default: 'low'
         type: choice
         options:
           - low
@@ -27,8 +27,8 @@ on:
           - critical
       scan-all:
         description: 'Scan all dependencies (not just changed ones)'
-        required: false
-        default: false
+        required: true
+        default: true
         type: boolean
 
 permissions:
@@ -38,18 +38,22 @@ permissions:
 
 jobs:
   dependency-review:
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: 'Checkout repository'
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      
       - name: 'Dependency Review'
         uses: actions/dependency-review-action@v4
         with:
           comment-summary-in-pr: always
           fail-on-severity: moderate
+        env:
+          GITHUB_BASE_REF: ${{ github.event_name == 'push' && github.event.before || github.base_ref }}
+          GITHUB_HEAD_REF: ${{ github.event_name == 'push' && github.event.after || github.head_ref }}
   
   manual-dependency-check:
     if: github.event_name == 'workflow_dispatch'
