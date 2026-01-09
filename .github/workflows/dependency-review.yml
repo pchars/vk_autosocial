@@ -38,7 +38,6 @@ permissions:
 
 jobs:
   dependency-review:
-    # Запускаем только для pull_request событий
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -53,47 +52,250 @@ jobs:
           fail-on-severity: moderate
   
   manual-dependency-check:
-    # Запускаем только для ручного запуска
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    outputs:
+      report: ${{ steps.generate-report.outputs.report }}
     steps:
       - name: 'Checkout repository'
         uses: actions/checkout@v4
       
-      - name: 'Install dependencies'
+      - name: 'Detect package manager'
+        id: detect-pm
         run: |
-          # Здесь установите зависимости вашего проекта
-          # Например: npm ci, pip install -r requirements.txt и т.д.
-          echo "Install dependencies based on your project type"
+          if [ -f "package.json" ]; then
+            echo "PM=npm" >> $GITHUB_OUTPUT
+            echo "MANIFEST=package.json" >> $GITHUB_OUTPUT
+            echo "LOCK=package-lock.json" >> $GITHUB_OUTPUT
+          elif [ -f "yarn.lock" ]; then
+            echo "PM=yarn" >> $GITHUB_OUTPUT
+            echo "MANIFEST=package.json" >> $GITHUB_OUTPUT
+            echo "LOCK=yarn.lock" >> $GITHUB_OUTPUT
+          elif [ -f "poetry.lock" ]; then
+            echo "PM=poetry" >> $GITHUB_OUTPUT
+            echo "MANIFEST=pyproject.toml" >> $GITHUB_OUTPUT
+            echo "LOCK=poetry.lock" >> $GITHUB_OUTPUT
+          elif [ -f "Pipfile.lock" ]; then
+            echo "PM=pipenv" >> $GITHUB_OUTPUT
+            echo "MANIFEST=Pipfile" >> $GITHUB_OUTPUT
+            echo "LOCK=Pipfile.lock" >> $GITHUB_OUTPUT
+          elif [ -f "requirements.txt" ]; then
+            echo "PM=pip" >> $GITHUB_OUTPUT
+            echo "MANIFEST=requirements.txt" >> $GITHUB_OUTPUT
+            echo "LOCK=" >> $GITHUB_OUTPUT
+          elif [ -f "composer.json" ]; then
+            echo "PM=composer" >> $GITHUB_OUTPUT
+            echo "MANIFEST=composer.json" >> $GITHUB_OUTPUT
+            echo "LOCK=composer.lock" >> $GITHUB_OUTPUT
+          elif [ -f "pom.xml" ]; then
+            echo "PM=maven" >> $GITHUB_OUTPUT
+            echo "MANIFEST=pom.xml" >> $GITHUB_OUTPUT
+            echo "LOCK=" >> $GITHUB_OUTPUT
+          else
+            echo "PM=unknown" >> $GITHUB_OUTPUT
+            echo "MANIFEST=" >> $GITHUB_OUTPUT
+            echo "LOCK=" >> $GITHUB_OUTPUT
+          fi
       
-      - name: 'Run security scan (example with npm audit)'
-        if: github.event.inputs.scan-all
+      - name: 'Generate dependency list'
+        id: list-deps
         run: |
-          # Используйте инструменты безопасности для вашего стека
-          # Например для Node.js:
-          # npm audit --audit-level=${{ github.event.inputs.severity || 'moderate' }}
-          # или для Python:
-          # pip-audit
-          echo "Run full security scan with severity: ${{ github.event.inputs.severity || 'moderate' }}"
+          PM="${{ steps.detect-pm.outputs.PM }}"
+          MANIFEST="${{ steps.detect-pm.outputs.MANIFEST }}"
+          
+          echo "Package manager: $PM"
+          echo "Manifest file: $MANIFEST"
+          
+          case $PM in
+            npm|yarn)
+              if [ -f "package.json" ]; then
+                echo "Extracting dependencies from package.json..."
+                DEPENDENCIES=$(node -e "
+                  const pkg = require('./package.json');
+                  const deps = {...(pkg.dependencies || {}), ...(pkg.devDependencies || {})};
+                  Object.keys(deps).forEach(dep => {
+                    console.log(\`\${dep} - \${deps[dep]}\`);
+                  });
+                ")
+                echo "$DEPENDENCIES" > dependencies.list
+                echo "Total dependencies: $(echo "$DEPENDENCIES" | wc -l)"
+              fi
+              ;;
+            pip)
+              if [ -f "requirements.txt" ]; then
+                echo "Extracting from requirements.txt..."
+                grep -v "^#" requirements.txt | grep -v "^$" > dependencies.list
+              fi
+              ;;
+            composer)
+              if [ -f "composer.json" ]; then
+                echo "Extracting from composer.json..."
+                DEPENDENCIES=$(php -r "
+                  \$data = json_decode(file_get_contents('composer.json'), true);
+                  \$deps = array_merge(
+                    \$data['require'] ?? [],
+                    \$data['require-dev'] ?? []
+                  );
+                  foreach (\$deps as \$dep => \$version) {
+                    echo \$dep . ' - ' . \$version . PHP_EOL;
+                  }
+                ")
+                echo "$DEPENDENCIES" > dependencies.list
+              fi
+              ;;
+            *)
+              echo "Package manager $PM not fully supported for listing"
+              echo "Please check $MANIFEST manually" > dependencies.list
+              ;;
+          esac
+          
+          if [ -f "dependencies.list" ]; then
+            echo "## Dependencies List" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            cat dependencies.list >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
       
-      - name: 'Check changed dependencies only'
-        if: github.event.inputs.scan-all == false
+      - name: 'Run security scan'
+        id: security-scan
         run: |
-          # Для проверки только измененных зависимостей может потребоваться
-          # сравнение с предыдущим коммитом
-          echo "Checking changed dependencies"
+          PM="${{ steps.detect-pm.outputs.PM }}"
+          SEVERITY="${{ github.event.inputs.severity || 'moderate' }}"
+          
+          echo "## Security Scan Results" >> $GITHUB_STEP_SUMMARY
+          
+          case $PM in
+            npm)
+              echo "Running npm audit..."
+              if [ "${{ github.event.inputs.scan-all }}" = "true" ]; then
+                npm audit --audit-level=$SEVERITY 2>&1 | tee audit.log
+              else
+                echo "Checking only changed dependencies is not supported for npm audit"
+                npm audit --audit-level=$SEVERITY 2>&1 | tee audit.log
+              fi
+              ;;
+            yarn)
+              echo "Running yarn audit..."
+              yarn audit --level $SEVERITY 2>&1 | tee audit.log
+              ;;
+            pip)
+              echo "Installing pip-audit..."
+              pip install pip-audit
+              echo "Running pip-audit..."
+              pip-audit --vulnerability-service osv --local --desc -r requirements.txt 2>&1 | tee audit.log
+              ;;
+            poetry)
+              echo "Running poetry audit..."
+              poetry add safety 2>/dev/null || true
+              poetry run safety check --json 2>&1 | tee audit.log
+              ;;
+            composer)
+              echo "Installing security-checker..."
+              wget https://github.com/fabpot/local-php-security-checker/releases/latest/download/local-php-security-checker-linux-amd64
+              chmod +x local-php-security-checker-linux-amd64
+              ./local-php-security-checker-linux-amd64 --path="." 2>&1 | tee audit.log
+              ;;
+            *)
+              echo "Security scan for $PM not implemented"
+              echo "No security scan available for $PM" | tee audit.log
+              ;;
+          esac
+          
+          # Проверяем наличие уязвимостей
+          if grep -qi "vulnerability\|vulnerabilities\|failed\|error" audit.log; then
+            echo "VULNERABILITIES_FOUND=true" >> $GITHUB_OUTPUT
+            echo "❌ **Vulnerabilities found!**" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "VULNERABILITIES_FOUND=false" >> $GITHUB_OUTPUT
+            echo "✅ **No vulnerabilities found**" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: 'Generate detailed report'
+        id: generate-report
+        run: |
+          echo "## 📊 Detailed Dependency Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package Manager**: ${{ steps.detect-pm.outputs.PM }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Manifest File**: ${{ steps.detect-pm.outputs.MANIFEST }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Scan Type**: ${{ github.event.inputs.scan-all == 'true' && 'Full scan' || 'Changed dependencies scan' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Severity Threshold**: ${{ github.event.inputs.severity || 'moderate' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Vulnerabilities Found**: ${{ steps.security-scan.outputs.VULNERABILITIES_FOUND == 'true' && 'YES' || 'NO' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "dependencies.list" ]; then
+            echo "### Checked Dependencies" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            # Добавляем статус проверки для каждой зависимости
+            while IFS= read -r line; do
+              if [ -n "$line" ]; then
+                dep_name=$(echo "$line" | cut -d' ' -f1)
+                echo "$dep_name - checked - OK" >> $GITHUB_STEP_SUMMARY
+              fi
+            done < dependencies.list
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -f "audit.log" ]; then
+            echo "### Security Scan Log" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            tail -50 audit.log >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Создаем markdown отчет для вывода
+          REPORT_CONTENT=$(cat << EOF
+          # Dependency Check Report
+          
+          ## Summary
+          - Date: $(date)
+          - Repository: ${{ github.repository }}
+          - Run ID: ${{ github.run_id }}
+          - Package Manager: ${{ steps.detect-pm.outputs.PM }}
+          - Status: ${{ steps.security-scan.outputs.VULNERABILITIES_FOUND == 'true' && 'FAILED' || 'PASSED' }}
+          
+          ## Dependencies Checked
+          \`\`\`
+          $(cat dependencies.list 2>/dev/null || echo "No dependencies listed")
+          \`\`\`
+          
+          ## Scan Results
+          \`\`\`
+          $(tail -100 audit.log 2>/dev/null || echo "No scan results")
+          \`\`\`
+          EOF
+          )
+          
+          echo "report<<EOF" >> $GITHUB_OUTPUT
+          echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+      
+      - name: 'Upload report as artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-report
+          path: |
+            dependencies.list
+            audit.log
+          retention-days: 7
       
       - name: 'Create Issue on failure'
-        if: failure()
+        if: steps.security-scan.outputs.VULNERABILITIES_FOUND == 'true'
         uses: actions/github-script@v6
         with:
           script: |
             try {
+              const fs = require('fs');
+              let report = '';
+              if (fs.existsSync('dependencies.list')) {
+                report = fs.readFileSync('dependencies.list', 'utf8');
+              }
+              
               const issue = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: '🚨 Manual Dependency Check Failed',
-                body: `Manual dependency check found issues.
+                title: '🚨 Manual Dependency Check Failed - Vulnerabilities Found',
+                body: `Manual dependency check found security vulnerabilities.
                 
                 **Details:**
                 - Repository: ${context.repo.owner}/${context.repo.repo}
@@ -102,11 +304,15 @@ jobs:
                 - Run URL: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
                 - Severity Level: ${{ github.event.inputs.severity || 'moderate' }}
                 
-                Please check the workflow run for details.`,
+                **Checked dependencies:**
+                \`\`\`
+                ${report}
+                \`\`\`
+                
+                Please check the workflow run for full details.`,
                 labels: ['security', 'dependencies', 'ci-failed']
               });
               console.log(`Issue created: ${issue.data.html_url}`);
             } catch (error) {
               console.log('Could not create issue:', error.message);
-              console.log('Consider adding issues:write permission');
             }
