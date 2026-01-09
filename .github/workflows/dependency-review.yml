@@ -78,7 +78,8 @@ jobs:
         run: |
           echo "## pip-audit scan (severity: low+):" > /tmp/pip_audit_result.txt
           echo '```' >> /tmp/pip_audit_result.txt
-          python -m pip_audit --disable-pip -r /tmp/installed_packages.txt --desc --severity low 2>&1 | tee -a /tmp/pip_audit_result.txt || true
+          # Исправлено: удален --disable-pip и используется только -r
+          python -m pip_audit -r /tmp/installed_packages.txt --desc --severity low 2>&1 | tee -a /tmp/pip_audit_result.txt || true
           echo '```' >> /tmp/pip_audit_result.txt
       
       - name: Run safety scan
@@ -88,7 +89,8 @@ jobs:
         run: |
           echo "## Safety scan:" > /tmp/safety_result.txt
           echo '```' >> /tmp/safety_result.txt
-          python -m safety scan -r /tmp/installed_packages.txt --json 2>/dev/null | python -c "import json,sys;d=json.load(sys.stdin);v=d.get('vulnerabilities',[]);print('\n'.join(f'✗ {v.get(\"package_name\",\"?\")} {v.get(\"analyzed_version\",\"?\")}\\n  Severity: {v.get(\"severity\",\"?\")}\\n  CVE: {v.get(\"CVE\") or v.get(\"vulnerability_id\",\"?\")}\\n' for v in v) if v else '✅ No vulnerabilities found') if 'vulnerabilities' in d else '✅ No vulnerabilities found')" 2>/dev/null || echo "⚠️ Error during safety scan" >> /tmp/safety_result.txt 2>&1 || echo "⚠️ Safety scan failed" >> /tmp/safety_result.txt
+          # Исправлено: упрощенная команда safety
+          python -m safety check -r /tmp/installed_packages.txt 2>&1 | tee -a /tmp/safety_result.txt || echo "⚠️ Safety scan failed or no vulnerabilities found" >> /tmp/safety_result.txt
           echo '```' >> /tmp/safety_result.txt
       
       - name: Generate security report
