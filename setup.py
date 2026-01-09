@@ -10,11 +10,11 @@ setup(
     author_email='alexander.geraskin@gmail.com',
     description='VK AutoSocial Automation Tool',
     install_requires=[
-        'aiohttp>=3.9.0,<4.0.0',
+        'aiohttp>=3.13.3',
         'imagehash>=4.3.0,<5.0.0',
         'matplotlib>=3.8.0,<4.0.0',
         'pandas>=2.1.0,<3.0.0',
-        'Pillow>=10.0.0,<11.0.0',
+        'Pillow>=10.3.0',
         'requests>=2.31.0,<3.0.0',
         'seaborn>=0.13.0,<0.14.0',
         'vk-api>=11.9.0,<12.0.0',

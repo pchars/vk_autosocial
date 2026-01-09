@@ -161,9 +161,10 @@ cython_debug/
 .idea/
 
 # Script specific files
-/vk_config.v2.json
-/conf.cfg
-/charts/
-/tmp/
-/images/
-/logs/
+vk_config.v2.json
+conf.cfg
+vk_autosocial.egg-info/
+charts/
+tmp/
+images/
+logs/
