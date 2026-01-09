@@ -65,7 +65,7 @@ jobs:
         run: |
           echo "## Safety scan:" > /tmp/safety_result.txt
           echo '```' >> /tmp/safety_result.txt
-          python -m safety scan /tmp/requirements_freeze.txt --json 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print(f'Scanned packages: {len(d.get(\"scanned_packages\",[]))}');v=d.get('vulnerabilities',[]);print(f'Found {len(v)} vulnerabilities:' if v else 'No vulnerabilities found');[print(f'- {v.get(\"package_name\")} {v.get(\"analyzed_version\")}: {v.get(\"CVE\") or v.get(\"vulnerability_id\")}') for v in d.get('vulnerabilities',[])]" 2>&1 | tee -a /tmp/safety_result.txt || echo "Safety scan failed" >> /tmp/safety_result.txt
+          python -m safety scan /tmp/requirements_freeze.txt 2>&1 | tee -a /tmp/safety_result.txt || true
           echo '```' >> /tmp/safety_result.txt
       
       - name: Generate security report
