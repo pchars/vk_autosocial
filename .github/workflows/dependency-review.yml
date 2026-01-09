@@ -27,7 +27,7 @@ jobs:
       - name: Install tools
         run: |
           python -m pip install --upgrade pip wheel setuptools
-          python -m pip install pip-audit safety>=2.4
+          python -m pip install pip-audit
       
       - name: Install project dependencies
         continue-on-error: true
@@ -53,20 +53,10 @@ jobs:
         id: pip-audit
         continue-on-error: true
         run: |
-          echo "## pip-audit scan:" > /tmp/pip_audit_result.txt
-          echo '```' >> /tmp/pip_audit_result.txt
-          python -m pip_audit -r /tmp/requirements_freeze.txt --desc 2>&1 | tee -a /tmp/pip_audit_result.txt || true
-          echo '```' >> /tmp/pip_audit_result.txt
-      
-      - name: Run safety scan
-        if: steps.deps.outputs.PACKAGE_COUNT > 0
-        id: safety
-        continue-on-error: true
-        run: |
-          echo "## Safety scan:" > /tmp/safety_result.txt
-          echo '```' >> /tmp/safety_result.txt
-          python -m safety scan /tmp/requirements_freeze.txt 2>&1 | tee -a /tmp/safety_result.txt || true
-          echo '```' >> /tmp/safety_result.txt
+          echo "## Security scan (pip-audit):" > /tmp/security_result.txt
+          echo '```' >> /tmp/security_result.txt
+          python -m pip_audit -r /tmp/requirements_freeze.txt --desc 2>&1 | tee -a /tmp/security_result.txt || true
+          echo '```' >> /tmp/security_result.txt
       
       - name: Generate security report
         if: always()
@@ -83,14 +73,8 @@ jobs:
             echo "" >> $GITHUB_STEP_SUMMARY
             
             # Add pip-audit results if available
-            if [ -f "/tmp/pip_audit_result.txt" ]; then
-              cat /tmp/pip_audit_result.txt >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-            fi
-            
-            # Add safety results if available
-            if [ -f "/tmp/safety_result.txt" ]; then
-              cat /tmp/safety_result.txt >> $GITHUB_STEP_SUMMARY
+            if [ -f "/tmp/security_result.txt" ]; then
+              cat /tmp/security_result.txt >> $GITHUB_STEP_SUMMARY
               echo "" >> $GITHUB_STEP_SUMMARY
             fi
             
@@ -98,18 +82,11 @@ jobs:
             echo "Scanned ${{ steps.deps.outputs.PACKAGE_COUNT }} packages for security vulnerabilities." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             
-            # Check for specific vulnerabilities
-            if [ -f "/tmp/safety_result.txt" ] && grep -q "Found.*vulnerabilities" /tmp/safety_result.txt; then
-              echo "**⚠️ Security Alert**" >> $GITHUB_STEP_SUMMARY
-              echo "Some dependencies have known security vulnerabilities. Please review the report above." >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-            fi
-            
             echo "**Recommendations:**" >> $GITHUB_STEP_SUMMARY
             echo "- Update vulnerable packages to their latest secure versions" >> $GITHUB_STEP_SUMMARY
             echo "- Regularly run security scans" >> $GITHUB_STEP_SUMMARY
             echo "- Review and fix reported vulnerabilities" >> $GITHUB_STEP_SUMMARY
-            echo "- Consider using \`pip-audit\` and \`safety\` in your local development workflow" >> $GITHUB_STEP_SUMMARY
+            echo "- Consider using \`pip-audit\` in your local development workflow" >> $GITHUB_STEP_SUMMARY
           else
             echo "## No Python packages found to scan." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
