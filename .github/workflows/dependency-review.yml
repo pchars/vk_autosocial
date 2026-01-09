@@ -53,10 +53,10 @@ jobs:
         id: pip-audit
         continue-on-error: true
         run: |
-          echo "## pip-audit scan (severity: low+):" > /tmp/pip_audit_result.txt
+          echo "## pip-audit scan:" > /tmp/pip_audit_result.txt
           echo '```' >> /tmp/pip_audit_result.txt
-          # Исправлено: используем только файл без аргумента -r
-          python -m pip_audit /tmp/requirements_freeze.txt --desc --severity low 2>&1 | tee -a /tmp/pip_audit_result.txt || true
+          # Исправлено: убрал несуществующий аргумент --severity
+          python -m pip_audit -r /tmp/requirements_freeze.txt --desc 2>&1 | tee -a /tmp/pip_audit_result.txt || true
           echo '```' >> /tmp/pip_audit_result.txt
       
       - name: Run safety scan
@@ -66,8 +66,8 @@ jobs:
         run: |
           echo "## Safety scan:" > /tmp/safety_result.txt
           echo '```' >> /tmp/safety_result.txt
-          # Исправлено: используем правильную команду scan вместо check
-          python -m safety scan /tmp/requirements_freeze.txt --json 2>/dev/null | python -c "import json,sys;try:d=json.load(sys.stdin);'scanned_packages'in d and print(f'Scanned {len(d[\"scanned_packages\"])} packages');v=d.get('vulnerabilities',[]);print(f'Found {len(v)} vulnerabilities:')if v else print('✅ No vulnerabilities found');[print(f'✗ {i.get(\"package_name\",\"?\")} {i.get(\"analyzed_version\",\"?\")}\\n  Severity: {i.get(\"severity\",\"?\")}\\n  CVE: {i.get(\"CVE\") or i.get(\"vulnerability_id\",\"?\")}\\n')for i in v];exit(0)except Exception as e:print(f'Error parsing safety results: {e}\\n⚠️ Safety scan completed with warnings')" 2>&1 | tee -a /tmp/safety_result.txt || echo "⚠️ Safety scan failed" >> /tmp/safety_result.txt
+          # Исправлено: используем правильную команду scan
+          python -m safety scan /tmp/requirements_freeze.txt --json 2>/dev/null | python -c "import json,sys;exec('try:\n d=json.load(sys.stdin)\n if\"scanned_packages\"in d:\n  print(f\"✅ Scanned {len(d[\\\"scanned_packages\\\"])} packages\\n\")\n v=d.get(\\\"vulnerabilities\\\",[])\n if v:\n  print(f\"⚠️ Found {len(v)} vulnerabilities:\\n\")\n  for i in v:\n   a=i.get(\\\"advisory\\\",\\\"\\\");a=a[:200]+\\\"...\\\"if len(a)>200 else a\n   print(f\\\"✗ {i.get(\\\"package_name\\\",\\\"?\\\")} {i.get(\\\"analyzed_version\\\",\\\"?\\\")}\\n  Severity: {i.get(\\\"severity\\\",\\\"?\\\")}\\n  CVE: {i.get(\\\"CVE\\\") or i.get(\\\"vulnerability_id\\\",\\\"?\\\")}\\\"+('\\n  Advisory: '+a if a else '')+'\\n')\n else:\n  print(\\\"✅ No vulnerabilities found\\\")\nexcept Exception as e:print(f\\\"❌ Error parsing safety results: {str(e)[:100]}\\n⚠️ Safety scan completed with warnings\\\")')" 2>&1 | tee -a /tmp/safety_result.txt || echo "❌ Safety scan failed" >> /tmp/safety_result.txt
           echo '```' >> /tmp/safety_result.txt
       
       - name: Generate security report
@@ -106,7 +106,7 @@ jobs:
             echo "- Consider using \`pip-audit\` and \`safety\` in your local development workflow" >> $GITHUB_STEP_SUMMARY
             
             # Check for specific vulnerabilities
-            if [ -f "/tmp/safety_result.txt" ] && grep -q "vulnerabilities" /tmp/safety_result.txt; then
+            if [ -f "/tmp/safety_result.txt" ] && grep -q "Found.*vulnerabilities" /tmp/safety_result.txt; then
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "**⚠️ Security Alert**" >> $GITHUB_STEP_SUMMARY
               echo "Some dependencies have known security vulnerabilities. Please review the report above." >> $GITHUB_STEP_SUMMARY
