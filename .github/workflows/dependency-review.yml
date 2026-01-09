@@ -65,7 +65,7 @@ jobs:
         run: |
           echo "## Safety scan:" > /tmp/safety_result.txt
           echo '```' >> /tmp/safety_result.txt
-          python -m safety scan /tmp/requirements_freeze.txt --json 2>/dev/null | python3 -c "import json,sys;exec('try:\n d=json.load(sys.stdin)\n if\"scanned_packages\"in d:print(f\"Scanned {len(d[\\\"scanned_packages\\\"])} packages\\n\")\n v=d.get(\"vulnerabilities\",[])\n if v:print(f\"Found {len(v)} vulnerabilities:\\n\")\n for i in v:a=i.get(\"advisory\",\"\");a=a[:200]+\"...\"if len(a)>200 else a;print(f\"✗ {i.get(\\\"package_name\\\",\\\"?\\\")} {i.get(\\\"analyzed_version\\\",\\\"?\\\")}\\n  Severity: {i.get(\\\"severity\\\",\\\"?\\\")}\\n  CVE: {i.get(\\\"CVE\\\")or i.get(\\\"vulnerability_id\\\",\\\"?\\\")}\"+(\"\\n  Advisory: \"+a if a else\"\")+\"\\n\")\n else:print(\"No vulnerabilities found\")\nexcept Exception as e:print(f\"Error parsing safety results: {str(e)[:100]}\\nSafety scan completed with warnings\")')" 2>&1 | tee -a /tmp/safety_result.txt || echo "Safety scan failed" >> /tmp/safety_result.txt
+          python -m safety scan /tmp/requirements_freeze.txt --json 2>/dev/null | python3 -c "import json,sys;d=json.load(sys.stdin);print(f'Scanned packages: {len(d.get(\"scanned_packages\",[]))}');v=d.get('vulnerabilities',[]);print(f'Found {len(v)} vulnerabilities:' if v else 'No vulnerabilities found');[print(f'- {v.get(\"package_name\")} {v.get(\"analyzed_version\")}: {v.get(\"CVE\") or v.get(\"vulnerability_id\")}') for v in d.get('vulnerabilities',[])]" 2>&1 | tee -a /tmp/safety_result.txt || echo "Safety scan failed" >> /tmp/safety_result.txt
           echo '```' >> /tmp/safety_result.txt
       
       - name: Generate security report
