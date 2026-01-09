@@ -43,7 +43,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       
-      - name: Setup Python ${{ matrix.python-version }}
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -86,39 +86,10 @@ jobs:
             echo "### safety scan:" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             
-            python3 -c "
-import subprocess
-import json
-
-try:
-    result = subprocess.run(
-        ['python', '-m', 'safety', 'scan', '-r', '/tmp/installed_packages.txt', '--json'],
-        capture_output=True,
-        text=True
-    )
-    
-    if result.stdout:
-        try:
-            data = json.loads(result.stdout)
-            if 'vulnerabilities' in data:
-                vulns = data['vulnerabilities']
-                if vulns:
-                    for v in vulns:
-                        print(f'✗ {v.get(\"package_name\", \"?\")} {v.get(\"analyzed_version\", \"?\")}')
-                        print(f'  Severity: {v.get(\"severity\", \"?\")}')
-                        cve = v.get('CVE') or v.get('vulnerability_id', '?')
-                        print(f'  CVE: {cve}')
-                else:
-                    print('✅ No vulnerabilities found')
-            else:
-                print('✅ Safety scan completed')
-        except json.JSONDecodeError:
-            print('⚠️ Safety scan completed')
-    else:
-        print('⚠️ Safety scan completed')
-except Exception as e:
-    print(f'⚠️ Error during safety scan')
-" >> $GITHUB_STEP_SUMMARY
+            # Create a temporary Python script
+            cat > /tmp/safety_parser.py << "import subprocess, json; exec(\"try: result = subprocess.run(['python', '-m', 'safety', 'scan', '-r', '/tmp/installed_packages.txt', '--json'], capture_output=True, text=True); print('✅ Safety scan completed') if not result.stdout or 'vulnerabilities' not in (data := json.loads(result.stdout)) else [print(f'✗ {v.get(\\\"package_name\\\", \\\"?\\\")} {v.get(\\\"analyzed_version\\\", \\\"?\\\")}\\n  Severity: {v.get(\\\"severity\\\", \\\"?\\\")}\\n  CVE: {v.get(\\\"CVE\\\") or v.get(\\\"vulnerability_id\\\", \\\"?\\\")}') for v in data['vulnerabilities']] if data['vulnerabilities'] else print('✅ No vulnerabilities found') except json.JSONDecodeError: print('⚠️ Safety scan completed') except Exception: print('⚠️ Error during safety scan')\")"
+            
+            python /tmp/safety_parser.py >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             
             echo "## Summary" >> $GITHUB_STEP_SUMMARY
