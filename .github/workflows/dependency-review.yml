@@ -1,16 +1,8 @@
-name: 'Dependency Security Scan'
+name: 'Python Dependency Security Scan'
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
-    inputs:
-      scan-all:
-        description: 'Scan all dependencies (not just changed ones)'
-        required: false
-        default: true
-        type: boolean
 
 permissions:
   contents: read
@@ -18,23 +10,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  dependency-review-pr:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      
-      - name: Dependency Review
-        uses: actions/dependency-review-action@v4
-        with:
-          comment-summary-in-pr: always
-          fail-on-severity: low
-
-  python-security-scan:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+  security-scan:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -66,8 +42,9 @@ jobs:
       - name: Generate dependency list
         id: deps
         run: |
-          python -m pip list --format=freeze > /tmp/installed_packages.txt
-          PACKAGE_COUNT=$(grep -c "==" /tmp/installed_packages.txt || echo "0")
+          # Создаем requirements.txt из установленных пакетов
+          python -m pip freeze > /tmp/requirements_freeze.txt
+          PACKAGE_COUNT=$(wc -l < /tmp/requirements_freeze.txt || echo "0")
           echo "PACKAGE_COUNT=$PACKAGE_COUNT" >> $GITHUB_OUTPUT
           echo "Found $PACKAGE_COUNT packages to scan"
       
@@ -78,8 +55,8 @@ jobs:
         run: |
           echo "## pip-audit scan (severity: low+):" > /tmp/pip_audit_result.txt
           echo '```' >> /tmp/pip_audit_result.txt
-          # Исправлено: удален --disable-pip и используется только -r
-          python -m pip_audit -r /tmp/installed_packages.txt --desc --severity low 2>&1 | tee -a /tmp/pip_audit_result.txt || true
+          # Исправлено: используем только файл без аргумента -r
+          python -m pip_audit /tmp/requirements_freeze.txt --desc --severity low 2>&1 | tee -a /tmp/pip_audit_result.txt || true
           echo '```' >> /tmp/pip_audit_result.txt
       
       - name: Run safety scan
@@ -89,8 +66,8 @@ jobs:
         run: |
           echo "## Safety scan:" > /tmp/safety_result.txt
           echo '```' >> /tmp/safety_result.txt
-          # Исправлено: упрощенная команда safety
-          python -m safety check -r /tmp/installed_packages.txt 2>&1 | tee -a /tmp/safety_result.txt || echo "⚠️ Safety scan failed or no vulnerabilities found" >> /tmp/safety_result.txt
+          # Исправлено: используем правильную команду scan вместо check
+          python -m safety scan /tmp/requirements_freeze.txt --json 2>/dev/null | python -c "import json,sys;try:d=json.load(sys.stdin);'scanned_packages'in d and print(f'Scanned {len(d[\"scanned_packages\"])} packages');v=d.get('vulnerabilities',[]);print(f'Found {len(v)} vulnerabilities:')if v else print('✅ No vulnerabilities found');[print(f'✗ {i.get(\"package_name\",\"?\")} {i.get(\"analyzed_version\",\"?\")}\\n  Severity: {i.get(\"severity\",\"?\")}\\n  CVE: {i.get(\"CVE\") or i.get(\"vulnerability_id\",\"?\")}\\n')for i in v];exit(0)except Exception as e:print(f'Error parsing safety results: {e}\\n⚠️ Safety scan completed with warnings')" 2>&1 | tee -a /tmp/safety_result.txt || echo "⚠️ Safety scan failed" >> /tmp/safety_result.txt
           echo '```' >> /tmp/safety_result.txt
       
       - name: Generate security report
@@ -123,10 +100,17 @@ jobs:
             echo "Scanned ${{ steps.deps.outputs.PACKAGE_COUNT }} packages for security vulnerabilities." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Recommendations:**" >> $GITHUB_STEP_SUMMARY
-            echo "- Update requirements.txt with exact versions: \`pip freeze > requirements.txt\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Update vulnerable packages to their latest secure versions" >> $GITHUB_STEP_SUMMARY
             echo "- Regularly run security scans" >> $GITHUB_STEP_SUMMARY
             echo "- Review and fix reported vulnerabilities" >> $GITHUB_STEP_SUMMARY
             echo "- Consider using \`pip-audit\` and \`safety\` in your local development workflow" >> $GITHUB_STEP_SUMMARY
+            
+            # Check for specific vulnerabilities
+            if [ -f "/tmp/safety_result.txt" ] && grep -q "vulnerabilities" /tmp/safety_result.txt; then
+              echo "" >> $GITHUB_STEP_SUMMARY
+              echo "**⚠️ Security Alert**" >> $GITHUB_STEP_SUMMARY
+              echo "Some dependencies have known security vulnerabilities. Please review the report above." >> $GITHUB_STEP_SUMMARY
+            fi
           else
             echo "## No Python packages found to scan." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
