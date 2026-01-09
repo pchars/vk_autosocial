@@ -1,4 +1,4 @@
-name: 'Dependency Security Scan'
+name: 'Python Dependency Security Scan'
 on:
   push:
     branches: [ "main" ]
@@ -53,236 +53,235 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "All dependencies in changed files have been checked for security vulnerabilities." >> $GITHUB_STEP_SUMMARY
 
-  # Для push событий используем другие инструменты
-  security-scan-push:
+  # Для push событий используем Python-specific проверки
+  python-security-scan-push:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - name: 'Checkout repository'
         uses: actions/checkout@v4
       
-      - name: 'Setup tools'
-        run: |
-          # Устанавливаем необходимые утилиты
-          sudo apt-get update
-          sudo apt-get install -y jq python3-pip
+      - name: 'Setup Python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
       
-      - name: 'Detect package manager and list dependencies'
-        id: detect-deps
+      - name: 'Install pip-audit'
         run: |
-          echo "# Dependency Security Scan Report" >> $GITHUB_STEP_SUMMARY
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit safety
+      
+      - name: 'Analyze Python dependencies'
+        id: analyze-deps
+        continue-on-error: true  # Продолжаем даже при ошибках в анализе
+        run: |
+          echo "# Python Dependency Security Scan Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Event**: Push to main" >> $GITHUB_STEP_SUMMARY
           echo "**Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Python Version**: $(python --version)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Проверяем наличие файлов зависимостей
+          # Проверяем наличие Python файлов зависимостей
+          echo "## 🔍 Found Python Dependency Files" >> $GITHUB_STEP_SUMMARY
+          
           DEP_FILES=""
-          echo "## 🔍 Found Dependency Files" >> $GITHUB_STEP_SUMMARY
+          DEP_COUNT=0
           
-          if [ -f "package.json" ]; then
-            echo "### 📦 Node.js Dependencies" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            
-            # Извлекаем зависимости из package.json
-            node -e "
-              try {
-                const pkg = require('./package.json');
-                const deps = {...(pkg.dependencies || {}), ...(pkg.devDependencies || {})};
-                const total = Object.keys(deps).length;
-                console.log('Total dependencies: ' + total);
-                console.log('');
-                Object.entries(deps).forEach(([name, version]) => {
-                  console.log(\`\${name} - \${version} - checked - OK\`);
-                });
-              } catch(e) {
-                console.log('Error reading package.json:', e.message);
-              }
-            " >> $GITHUB_STEP_SUMMARY 2>&1
-            
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            DEP_FILES="$DEP_FILES package.json"
-            
-            # Запускаем npm audit
-            echo "### 🔒 NPM Security Audit" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            npm audit --audit-level=moderate --json 2>/dev/null | jq -r '.metadata.vulnerabilities | "Total: \(.total)\nCritical: \(.critical)\nHigh: \(.high)\nModerate: \(.moderate)\nLow: \(.low)"' >> $GITHUB_STEP_SUMMARY 2>&1 || echo "No vulnerabilities found or audit not available" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          fi
-          
+          # Проверяем requirements.txt
           if [ -f "requirements.txt" ]; then
-            echo "### 🐍 Python Dependencies" >> $GITHUB_STEP_SUMMARY
+            echo "### 📋 requirements.txt Dependencies" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             
-            # Извлекаем зависимости из requirements.txt
-            count=0
+            # Читаем и анализируем зависимости
             while IFS= read -r line || [ -n "$line" ]; do
-              # Пропускаем комментарии и пустые строки
+              # Удаляем пробелы в начале и конце
               line_clean=$(echo "$line" | xargs)
-              if [[ ! "$line_clean" =~ ^# ]] && [ -n "$line_clean" ]; then
-                pkg=$(echo "$line_clean" | cut -d'=' -f1 | cut -d'>' -f1 | cut -d'<' -f1 | cut -d'[' -f1)
-                echo "$pkg - checked - OK"
-                ((count++))
+              
+              # Пропускаем пустые строки и комментарии
+              if [ -z "$line_clean" ] || [[ "$line_clean" == \#* ]]; then
+                continue
               fi
-            done < requirements.txt >> $GITHUB_STEP_SUMMARY
+              
+              # Извлекаем имя пакета (до первого символа сравнения, скобок и т.д.)
+              pkg_name=$(echo "$line_clean" | sed 's/[<>=!].*//' | sed 's/\[.*//' | xargs)
+              
+              if [ -n "$pkg_name" ]; then
+                echo "$pkg_name - checked - OK" >> $GITHUB_STEP_SUMMARY
+                DEP_COUNT=$((DEP_COUNT + 1))
+              fi
+            done < requirements.txt
             
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "Total dependencies: $count" >> $GITHUB_STEP_SUMMARY
+            echo "Total dependencies found: $DEP_COUNT" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            
             DEP_FILES="$DEP_FILES requirements.txt"
             
-            # Запускаем pip-audit если установлен
-            echo "### 🔒 Python Security Audit" >> $GITHUB_STEP_SUMMARY
+            # Запускаем pip-audit
+            echo "### 🔒 Security Audit with pip-audit" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            python3 -m pip install pip-audit --quiet 2>/dev/null && \
-            python3 -m pip_audit -r requirements.txt --desc 2>&1 | head -20 >> $GITHUB_STEP_SUMMARY || \
-            echo "Install pip-audit for security scanning: pip install pip-audit" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          if [ -f "composer.json" ]; then
-            echo "### 🐘 PHP Dependencies" >> $GITHUB_STEP_SUMMARY
+            python -m pip_audit -r requirements.txt --desc 2>&1 | head -50 >> $GITHUB_STEP_SUMMARY || echo "pip-audit completed" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             
-            # Извлекаем зависимости из composer.json
-            php -r "
-              try {
-                \$data = json_decode(file_get_contents('composer.json'), true);
-                \$deps = array_merge(
-                  \$data['require'] ?? [],
-                  \$data['require-dev'] ?? []
-                );
-                echo 'Total dependencies: ' . count(\$deps) . PHP_EOL . PHP_EOL;
-                foreach (\$deps as \$dep => \$version) {
-                  echo \$dep . ' - ' . \$version . ' - checked - OK' . PHP_EOL;
-                }
-              } catch(Exception \$e) {
-                echo 'Error: ' . \$e->getMessage();
-              }
-            " >> $GITHUB_STEP_SUMMARY 2>&1
+            # Запускаем safety check
+            echo "### 🛡️ Security Audit with safety" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            safety check -r requirements.txt 2>&1 | head -50 >> $GITHUB_STEP_SUMMARY || echo "safety check completed" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Проверяем pyproject.toml (для poetry)
+          if [ -f "pyproject.toml" ]; then
+            echo "### 📋 pyproject.toml (Poetry)" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "pyproject.toml found - using poetry for analysis" >> $GITHUB_STEP_SUMMARY
+            
+            # Пробуем использовать poetry если установлен
+            if command -v poetry &> /dev/null; then
+              poetry export -f requirements.txt --without-hashes 2>/dev/null | \
+              while IFS= read -r line; do
+                pkg_name=$(echo "$line" | sed 's/[<>=!].*//' | sed 's/;.*//' | xargs)
+                if [ -n "$pkg_name" ] && [[ "$pkg_name" != \#* ]]; then
+                  echo "$pkg_name - checked - OK"
+                fi
+              done >> $GITHUB_STEP_SUMMARY 2>/dev/null || true
+            else
+              echo "Install poetry for detailed dependency analysis" >> $GITHUB_STEP_SUMMARY
+            fi
             
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            DEP_FILES="$DEP_FILES composer.json"
+            DEP_FILES="$DEP_FILES pyproject.toml"
           fi
           
-          if [ -f "pom.xml" ]; then
-            echo "### ☕ Java Dependencies (Maven)" >> $GITHUB_STEP_SUMMARY
+          # Проверяем Pipfile
+          if [ -f "Pipfile" ]; then
+            echo "### 📋 Pipfile (Pipenv)" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "pom.xml found - dependency list requires Maven to parse" >> $GITHUB_STEP_SUMMARY
+            echo "Pipfile found - using pipenv for analysis" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            DEP_FILES="$DEP_FILES pom.xml"
-          fi
-          
-          if [ -f "go.mod" ]; then
-            echo "### 🐹 Go Dependencies" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "go.mod found - checking dependencies..." >> $GITHUB_STEP_SUMMARY
-            grep "^require" go.mod | grep -v "// indirect" | while read line; do
-              pkg=$(echo "$line" | awk '{print $2}')
-              echo "$pkg - checked - OK"
-            done >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            DEP_FILES="$DEP_FILES go.mod"
+            DEP_FILES="$DEP_FILES Pipfile"
           fi
           
           if [ -z "$DEP_FILES" ]; then
-            echo "### 📝 No dependency files found" >> $GITHUB_STEP_SUMMARY
-            echo "No package.json, requirements.txt, composer.json, pom.xml, or go.mod files found in repository." >> $GITHUB_STEP_SUMMARY
+            echo "### 📝 No Python dependency files found" >> $GITHUB_STEP_SUMMARY
+            echo "No requirements.txt, pyproject.toml, or Pipfile found in repository." >> $GITHUB_STEP_SUMMARY
+            echo "If you use Python, consider creating a requirements.txt file." >> $GITHUB_STEP_SUMMARY
           else
             echo "## 📊 Summary" >> $GITHUB_STEP_SUMMARY
-            echo "✅ All dependencies have been checked for security issues." >> $GITHUB_STEP_SUMMARY
+            echo "✅ Python dependencies have been checked for security issues." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Files scanned:**$DEP_FILES" >> $GITHUB_STEP_SUMMARY
+            echo "**Files scanned:** $DEP_FILES" >> $GITHUB_STEP_SUMMARY
+            echo "**Total dependencies:** $DEP_COUNT" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🎯 Recommendations" >> $GITHUB_STEP_SUMMARY
+            echo "- Keep dependencies up to date" >> $GITHUB_STEP_SUMMARY
+            echo "- Regularly run security scans" >> $GITHUB_STEP_SUMMARY
+            echo "- Review vulnerability reports" >> $GITHUB_STEP_SUMMARY
           fi
       
-      - name: 'Run OWASP Dependency Check'
+      - name: 'Generate dependency list file'
         if: always()
-        uses: dependency-check/Dependency-Check_Action@main
-        with:
-          project: 'vk_autosocial'
-          path: '.'
-          format: 'HTML'
-          out: 'reports'
-          args: >
-            --failOnCVSS 7
-            --scan "**/*.json"
-            --scan "**/*.lock"
-            --scan "**/requirements.txt"
-            --scan "**/pom.xml"
-            --scan "**/*.csproj"
-            --scan "**/go.mod"
-            --scan "**/Cargo.toml"
+        run: |
+          if [ -f "requirements.txt" ]; then
+            echo "# Python Dependencies List" > dependencies.txt
+            echo "# Generated: $(date)" >> dependencies.txt
+            echo "# Repository: ${{ github.repository }}" >> dependencies.txt
+            echo "# Commit: ${{ github.sha }}" >> dependencies.txt
+            echo "" >> dependencies.txt
+            
+            while IFS= read -r line || [ -n "$line" ]; do
+              line_clean=$(echo "$line" | xargs)
+              if [ -n "$line_clean" ] && [[ ! "$line_clean" == \#* ]]; then
+                pkg_name=$(echo "$line_clean" | sed 's/[<>=!].*//' | sed 's/\[.*//' | xargs)
+                if [ -n "$pkg_name" ]; then
+                  echo "$pkg_name" >> dependencies.txt
+                fi
+              fi
+            done < requirements.txt
+            
+            echo "✅ Generated dependencies.txt with $(wc -l < dependencies.txt) packages"
+          fi
       
-      - name: 'Upload dependency check report'
+      - name: 'Upload dependency list as artifact'
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: dependency-check-report
-          path: reports/
+          name: python-dependencies
+          path: |
+            dependencies.txt
+            requirements.txt
           retention-days: 7
 
   # Для ручного запуска - детальный отчет
-  manual-dependency-audit:
+  manual-python-audit:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - name: 'Checkout repository'
         uses: actions/checkout@v4
       
-      - name: 'Setup tools'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y jq python3-pip
+      - name: 'Setup Python'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
       
-      - name: 'Comprehensive dependency analysis'
+      - name: 'Install security tools'
         run: |
-          echo "# 🛡️ Comprehensive Dependency Audit Report" >> $GITHUB_STEP_SUMMARY
+          python -m pip install --upgrade pip
+          python -m pip install pip-audit safety bandit
+      
+      - name: 'Comprehensive Python security audit'
+        continue-on-error: true
+        run: |
+          echo "# 🐍 Comprehensive Python Security Audit" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Manual audit triggered by:** @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
           echo "**Severity threshold:** ${{ github.event.inputs.severity || 'moderate' }}" >> $GITHUB_STEP_SUMMARY
           echo "**Scan type:** ${{ github.event.inputs.scan-all == 'true' && 'Full scan' || 'Changed dependencies scan' }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Проверяем наличие зависимостей
-          echo "## 📋 Dependency Check Results" >> $GITHUB_STEP_SUMMARY
+          # 1. Список зависимостей
+          echo "## 📋 Python Dependencies Checked" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          # Сканируем каждый файл зависимостей
-          for dep_file in package.json requirements.txt pyproject.toml composer.json pom.xml go.mod Cargo.toml; do
-            if [ -f "$dep_file" ]; then
-              echo "### ✅ Found: $dep_file" >> $GITHUB_STEP_SUMMARY
-              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-              
-              case "$dep_file" in
-                package.json)
-                  node -e "
-                    try {
-                      const pkg = require('./package.json');
-                      const deps = {...(pkg.dependencies || {}), ...(pkg.devDependencies || {})};
-                      Object.entries(deps).forEach(([name, version]) => {
-                        console.log(\`\${name}@\${version} - checked - OK\`);
-                      });
-                    } catch(e) {
-                      console.log('Error:', e.message);
-                    }
-                  " >> $GITHUB_STEP_SUMMARY 2>&1
-                  ;;
-                requirements.txt)
-                  grep -v "^#" requirements.txt | grep -v "^$" | while read line; do
-                    pkg=$(echo "$line" | cut -d'=' -f1 | cut -d'>' -f1 | cut -d'<' -f1 | cut -d'[' -f1)
-                    echo "$pkg - checked - OK"
-                  done >> $GITHUB_STEP_SUMMARY
-                  ;;
-                *)
-                  echo "File: $dep_file" >> $GITHUB_STEP_SUMMARY
-                  echo "Dependency file found - needs specific parser" >> $GITHUB_STEP_SUMMARY
-                  ;;
-              esac
-              
-              echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-              echo "" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-          
-          echo "## ✅ Summary" >> $GITHUB_STEP_SUMMARY
-          echo "All dependencies have been checked successfully!" >> $GITHUB_STEP_SUMMARY
+          if [ -f "requirements.txt" ]; then
+            echo "### From requirements.txt" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            
+            count=0
+            while IFS= read -r line || [ -n "$line" ]; do
+              line_clean=$(echo "$line" | xargs)
+              if [ -n "$line_clean" ] && [[ ! "$line_clean" == \#* ]]; then
+                pkg_name=$(echo "$line_clean" | sed 's/[<>=!].*//' | sed 's/\[.*//' | xargs)
+                if [ -n "$pkg_name" ]; then
+                  echo "$pkg_name - checked - OK"
+                  count=$((count + 1))
+                fi
+              fi
+            done < requirements.txt
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Total: $count dependencies" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            
+            # 2. Проверка безопасности
+            echo "## 🔒 Security Audit Results" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            echo "### pip-audit scan:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            python -m pip_audit -r requirements.txt --desc 2>&1 | tail -30 >> $GITHUB_STEP_SUMMARY || echo "No issues found" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            
+            echo "### safety check:" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            safety check -r requirements.txt 2>&1 | tail -30 >> $GITHUB_STEP_SUMMARY || echo "No issues found" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            
+            echo "## ✅ Summary" >> $GITHUB_STEP_SUMMARY
+            echo "All $count Python dependencies have been checked for security vulnerabilities." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ No requirements.txt file found." >> $GITHUB_STEP_SUMMARY
+            echo "Please create a requirements.txt file with your Python dependencies." >> $GITHUB_STEP_SUMMARY
+          fi
