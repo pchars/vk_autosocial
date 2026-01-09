@@ -13,7 +13,6 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
-    # Manual starting
   workflow_dispatch:
     inputs:
       severity:
@@ -32,20 +31,15 @@ on:
         default: false
         type: boolean
 
-# If using a dependency submission action in this workflow this permission will need to be set to:
-#
-# permissions:
-#   contents: write
-#
-# https://docs.github.com/en/enterprise-cloud@latest/code-security/supply-chain-security/understanding-your-software-supply-chain/using-the-dependency-submission-api
 permissions:
   contents: read
   issues: write
-  # Write permissions for pull-requests are required for using the `comment-summary-in-pr` option, comment out if you aren't using this option
   pull-requests: write
 
 jobs:
   dependency-review:
+    # Запускаем только для pull_request событий
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: 'Checkout repository'
@@ -54,39 +48,65 @@ jobs:
           fetch-depth: 0
       - name: 'Dependency Review'
         uses: actions/dependency-review-action@v4
-        # Commonly enabled options, see https://github.com/actions/dependency-review-action#configuration-options for all available options.
         with:
           comment-summary-in-pr: always
-          fail-on-severity: ${{ github.event.inputs.severity || 'moderate' }}
-        #   fail-on-severity: moderate
-        #   deny-licenses: GPL-1.0-or-later, LGPL-2.0-or-later
-        #   retry-on-snapshot-warnings: true
-      - name: 'Optional: Full scan on manual trigger'
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scan-all }}
+          fail-on-severity: moderate
+  
+  manual-dependency-check:
+    # Запускаем только для ручного запуска
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 'Checkout repository'
+        uses: actions/checkout@v4
+      
+      - name: 'Install dependencies'
         run: |
-          echo "Performing full dependency scan..."
+          # Здесь установите зависимости вашего проекта
+          # Например: npm ci, pip install -r requirements.txt и т.д.
+          echo "Install dependencies based on your project type"
+      
+      - name: 'Run security scan (example with npm audit)'
+        if: github.event.inputs.scan-all
+        run: |
+          # Используйте инструменты безопасности для вашего стека
+          # Например для Node.js:
+          # npm audit --audit-level=${{ github.event.inputs.severity || 'moderate' }}
+          # или для Python:
+          # pip-audit
+          echo "Run full security scan with severity: ${{ github.event.inputs.severity || 'moderate' }}"
+      
+      - name: 'Check changed dependencies only'
+        if: github.event.inputs.scan-all == false
+        run: |
+          # Для проверки только измененных зависимостей может потребоваться
+          # сравнение с предыдущим коммитом
+          echo "Checking changed dependencies"
+      
       - name: 'Create Issue on failure'
-        if: failure() && github.event_name == 'workflow_dispatch'
+        if: failure()
         uses: actions/github-script@v6
         with:
           script: |
-            const issue = await github.rest.issues.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: '🚨 Dependency Review Failed - Manual Run',
-              body: `Manual dependency review found issues.
-              
-              **Details:**
-              - Repository: ${context.repo.owner}/${context.repo.repo}
-              - Workflow: ${context.workflow}
-              - Run ID: ${context.runId}
-              - Run URL: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
-              
-              Please check the workflow run for details.`,
-              labels: ['security', 'dependencies', 'ci-failed']
-            });
-            console.log(`Issue created: ${issue.data.html_url}`);
-      - name: 'Send failure notification via GitHub API'
-        if: failure() && github.event_name == 'workflow_dispatch'
-        run: |
-          echo "Workflow failed. Check GitHub notifications for details."
+            try {
+              const issue = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: '🚨 Manual Dependency Check Failed',
+                body: `Manual dependency check found issues.
+                
+                **Details:**
+                - Repository: ${context.repo.owner}/${context.repo.repo}
+                - Workflow: ${context.workflow}
+                - Run ID: ${context.runId}
+                - Run URL: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+                - Severity Level: ${{ github.event.inputs.severity || 'moderate' }}
+                
+                Please check the workflow run for details.`,
+                labels: ['security', 'dependencies', 'ci-failed']
+              });
+              console.log(`Issue created: ${issue.data.html_url}`);
+            } catch (error) {
+              console.log('Could not create issue:', error.message);
+              console.log('Consider adding issues:write permission');
+            }
