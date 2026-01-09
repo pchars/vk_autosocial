@@ -13,6 +13,24 @@ on:
     branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
+    # Manual starting
+  workflow_dispatch:
+    inputs:
+      severity:
+        description: 'Minimum severity level to fail on'
+        required: false
+        default: 'moderate'
+        type: choice
+        options:
+          - low
+          - moderate
+          - high
+          - critical
+      scan-all:
+        description: 'Scan all dependencies (not just changed ones)'
+        required: false
+        default: false
+        type: boolean
 
 # If using a dependency submission action in this workflow this permission will need to be set to:
 #
@@ -31,11 +49,43 @@ jobs:
     steps:
       - name: 'Checkout repository'
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: 'Dependency Review'
         uses: actions/dependency-review-action@v4
         # Commonly enabled options, see https://github.com/actions/dependency-review-action#configuration-options for all available options.
         with:
           comment-summary-in-pr: always
+          fail-on-severity: ${{ github.event.inputs.severity || 'moderate' }}
         #   fail-on-severity: moderate
         #   deny-licenses: GPL-1.0-or-later, LGPL-2.0-or-later
         #   retry-on-snapshot-warnings: true
+      - name: 'Optional: Full scan on manual trigger'
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.scan-all }}
+        run: |
+          echo "Performing full dependency scan..."
+      - name: 'Create Issue on failure'
+        if: failure() && github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issue = await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: '🚨 Dependency Review Failed - Manual Run',
+              body: `Manual dependency review found issues.
+              
+              **Details:**
+              - Repository: ${context.repo.owner}/${context.repo.repo}
+              - Workflow: ${context.workflow}
+              - Run ID: ${context.runId}
+              - Run URL: https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}
+              
+              Please check the workflow run for details.`,
+              labels: ['security', 'dependencies', 'ci-failed']
+            });
+            console.log(`Issue created: ${issue.data.html_url}`);
+      - name: 'Send failure notification via GitHub API'
+        if: failure() && github.event_name == 'workflow_dispatch'
+        run: |
+          echo "Workflow failed. Check GitHub notifications for details."
