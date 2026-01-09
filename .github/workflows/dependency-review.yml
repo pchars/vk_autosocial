@@ -6,20 +6,10 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
     inputs:
-      severity:
-        description: 'Minimum severity level to fail on'
-        required: false
-        default: 'moderate'
-        type: choice
-        options:
-          - low
-          - moderate
-          - high
-          - critical
       scan-all:
         description: 'Scan all dependencies (not just changed ones)'
         required: false
-        default: false
+        default: true
         type: boolean
 
 permissions:
@@ -28,7 +18,6 @@ permissions:
   pull-requests: write
 
 jobs:
-  # Для pull requests используем dependency-review-action
   dependency-review-pr:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -42,200 +31,10 @@ jobs:
         uses: actions/dependency-review-action@v4
         with:
           comment-summary-in-pr: always
-          fail-on-severity: moderate
-      
-      - name: 'Generate PR report'
-        if: always()
-        run: |
-          echo "# Dependency Review Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "✅ Pull request dependencies reviewed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "All dependencies in changed files have been checked for security vulnerabilities." >> $GITHUB_STEP_SUMMARY
+          fail-on-severity: low
 
-  # Для push событий используем Python-specific проверки
-  python-security-scan-push:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ['3.11']  # Используем более стабильную версию Python
-    steps:
-      - name: 'Checkout repository'
-        uses: actions/checkout@v4
-      
-      - name: 'Setup Python ${{ matrix.python-version }}'
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
-      
-      - name: 'Install audit tools'
-        run: |
-          python -m pip install --upgrade pip wheel setuptools
-          # Устанавливаем pre-built pandas чтобы избежать сборки
-          python -m pip install --only-binary :all: pandas numpy
-          python -m pip install pip-audit safety>=2.4
-      
-      - name: 'Install project dependencies'
-        continue-on-error: true
-        run: |
-          if [ -f "requirements.txt" ]; then
-            # Сначала устанавливаем pandas отдельно с бинарными пакетами
-            if grep -q "pandas" requirements.txt; then
-              python -m pip install --only-binary :all: $(grep pandas requirements.txt)
-            fi
-            
-            # Устанавливаем остальные зависимости
-            python -m pip install -r requirements.txt --no-deps
-            
-            # Теперь устанавливаем зависимости пакетов
-            for pkg in $(grep -v "^#" requirements.txt | grep -v "pandas" | xargs); do
-              pkg_name=$(echo "$pkg" | sed 's/[<>=!].*//' | sed 's/\[.*//' | xargs)
-              if [ -n "$pkg_name" ]; then
-                echo "Installing dependencies for: $pkg_name"
-                python -m pip install "$pkg_name" --no-deps || true
-              fi
-            done
-          fi
-      
-      - name: 'Generate dependency list for audit'
-        run: |
-          echo "# Python Dependencies" > dependencies_audit.txt
-          echo "# Generated: $(date)" >> dependencies_audit.txt
-          echo "" >> dependencies_audit.txt
-          
-          if [ -f "requirements.txt" ]; then
-            # Генерируем список только с именами пакетов для аудита
-            grep -v "^#" requirements.txt | \
-            while IFS= read -r line || [ -n "$line" ]; do
-              line_clean=$(echo "$line" | xargs)
-              if [ -n "$line_clean" ]; then
-                # Извлекаем имя пакета без версий и спецификаций
-                pkg_name=$(echo "$line_clean" | sed 's/[<>=!~].*//' | sed 's/\[.*//' | xargs)
-                echo "$pkg_name" >> dependencies_audit.txt
-              fi
-            done
-          fi
-      
-      - name: 'Run security audits'
-        id: security-audit
-        continue-on-error: true
-        env:
-          # Отключаем сборку из исходников для pandas
-          PANDAS_NO_BINARY: "1"
-        run: |
-          echo "# Python Dependency Security Scan Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Event**: Push to main" >> $GITHUB_STEP_SUMMARY
-          echo "**Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Python Version**: $(python --version)" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          # Используем фиксированный список зависимостей
-          if [ -f "dependencies_audit.txt" ]; then
-            echo "## 🔍 Dependencies Found" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            cat dependencies_audit.txt | tail -n +4 >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            
-            DEP_COUNT=$(grep -v "^#" dependencies_audit.txt | grep -v "^$" | wc -l)
-            
-            # 1. Используем pip-audit с опцией --require-hashes для избежания установки
-            echo "### 🔒 Security Audit with pip-audit" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            
-            # Создаем временный requirements файл без сложных спецификаций
-            grep -v "^#" dependencies_audit.txt | grep -v "^$" > /tmp/audit_deps.txt
-            
-            # Запускаем pip-audit только для аудита, без установки
-            if python -m pip_audit --disable-pip --requirement /tmp/audit_deps.txt --desc 2>&1; then
-              echo "✅ No vulnerabilities found with pip-audit" >> $GITHUB_STEP_SUMMARY
-            else
-              # Если pip-audit падает, пробуем альтернативный подход
-              echo "ℹ️ pip-audit encountered issues, trying alternative..." >> $GITHUB_STEP_SUMMARY
-              python -m pip list --format=freeze | python -m pip_audit --disable-pip --desc 2>&1 | head -20 >> $GITHUB_STEP_SUMMARY || echo "pip-audit scan completed" >> $GITHUB_STEP_SUMMARY
-            fi
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            
-            # 2. Используем новую команду safety scan (вместо устаревшего check)
-            echo "### 🛡️ Security Audit with safety scan" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            
-            # Проверяем версию safety
-            SAFETY_VERSION=$(python -m safety --version 2>&1 | head -1)
-            echo "Using safety: $SAFETY_VERSION" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            
-            # Используем новую команду scan
-            if python -m safety scan -r /tmp/audit_deps.txt --output json 2>/dev/null | python -c "
-import json, sys
-try:
-    data = json.load(sys.stdin)
-    if 'vulnerabilities' in data and data['vulnerabilities']:
-        for vuln in data['vulnerabilities']:
-            print(f'✗ {vuln.get(\"package_name\", \"Unknown\")} {vuln.get(\"analyzed_version\", \"\")}')
-            print(f'  Severity: {vuln.get(\"severity\", \"Unknown\")}')
-            print(f'  Advisory: {vuln.get(\"advisory\", \"No advisory\")[:80]}...')
-            print()
-    else:
-        print('✅ No vulnerabilities found with safety scan')
-except Exception as e:
-    print('⚠️ Safety scan completed with no issues found')
-" >> $GITHUB_STEP_SUMMARY; then
-              echo "" >> $GITHUB_STEP_SUMMARY
-            else
-              # Fallback для старых версий
-              echo "Trying fallback method..." >> $GITHUB_STEP_SUMMARY
-              python -m safety check -r /tmp/audit_deps.txt 2>&1 | grep -A5 -B5 "VULNERABILITY\|found" >> $GITHUB_STEP_SUMMARY || echo "Safety check completed" >> $GITHUB_STEP_SUMMARY
-            fi
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            
-            # 3. Дополнительная проверка через pip list
-            echo "### 📊 Installed Packages Check" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            python -m pip list --format=columns 2>&1 | head -20 >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            
-            echo "## 📋 Summary" >> $GITHUB_STEP_SUMMARY
-            echo "✅ Security scan completed for $DEP_COUNT dependencies" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "**Recommendations:**" >> $GITHUB_STEP_SUMMARY
-            echo "- Pin all dependencies with exact versions in requirements.txt" >> $GITHUB_STEP_SUMMARY
-            echo "- Regularly update dependencies" >> $GITHUB_STEP_SUMMARY
-            echo "- Consider using `--only-binary :all:` for packages like pandas" >> $GITHUB_STEP_SUMMARY
-            echo "- Use `pip freeze > requirements.txt` to generate exact versions" >> $GITHUB_STEP_SUMMARY
-            
-          else
-            echo "### 📝 No Python dependency files found" >> $GITHUB_STEP_SUMMARY
-            echo "No requirements.txt found in repository." >> $GITHUB_STEP_SUMMARY
-          fi
-      
-      - name: 'Generate exact requirements'
-        if: always() && steps.security-audit.outcome == 'success'
-        run: |
-          if command -v python &> /dev/null; then
-            echo "# Exact Python dependencies" > requirements_exact.txt
-            echo "# Generated: $(date)" >> requirements_exact.txt
-            echo "# Use: pip install -r requirements_exact.txt" >> requirements_exact.txt
-            echo "" >> requirements_exact.txt
-            python -m pip freeze >> requirements_exact.txt
-            echo "✅ Generated requirements_exact.txt"
-          fi
-      
-      - name: 'Upload artifacts'
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-security-scan-${{ github.sha }}
-          path: |
-            dependencies_audit.txt
-            requirements_exact.txt
-            requirements.txt
-          retention-days: 7
-
-  # Для ручного запуска
-  manual-python-audit:
-    if: github.event_name == 'workflow_dispatch'
+  python-security-scan:
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -249,64 +48,89 @@ except Exception as e:
         with:
           python-version: ${{ matrix.python-version }}
       
-      - name: 'Install tools with binary packages'
+      - name: 'Install tools'
         run: |
           python -m pip install --upgrade pip wheel setuptools
-          # Устанавливаем binary-пакеты для проблемных библиотек
           python -m pip install --only-binary :all: pandas numpy
           python -m pip install pip-audit safety>=2.4
       
-      - name: 'Comprehensive security audit'
+      - name: 'Install project dependencies'
         continue-on-error: true
-        env:
-          SEVERITY_THRESHOLD: ${{ github.event.inputs.severity || 'moderate' }}
         run: |
-          echo "# 🐍 Comprehensive Python Security Audit" >> $GITHUB_STEP_SUMMARY
+          if [ -f "requirements.txt" ]; then
+            python -m pip install -r requirements.txt
+          fi
+      
+      - name: 'Run security audits'
+        id: security-audit
+        continue-on-error: true
+        run: |
+          echo "# Python Dependency Security Scan Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Manual audit triggered by:** @${{ github.actor }}" >> $GITHUB_STEP_SUMMARY
-          echo "**Severity threshold:** $SEVERITY_THRESHOLD" >> $GITHUB_STEP_SUMMARY
-          echo "**Python Version:** $(python --version)" >> $GITHUB_STEP_SUMMARY
+          echo "**Event**: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit**: ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Python Version**: $(python --version)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [ -f "requirements.txt" ]; then
-            # Устанавливаем зависимости
-            echo "## 📦 Installing dependencies..." >> $GITHUB_STEP_SUMMARY
+          # Get installed packages
+          python -m pip list --format=freeze > /tmp/installed_packages.txt
+          PACKAGE_COUNT=$(grep -c "==" /tmp/installed_packages.txt || echo "0")
+          
+          echo "## 📦 Found $PACKAGE_COUNT packages" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$PACKAGE_COUNT" -gt 0 ]; then
+            echo "### pip-audit scan (severity: low+):" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            python -m pip install -r requirements.txt 2>&1 | tail -20 >> $GITHUB_STEP_SUMMARY || echo "Dependencies installed" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            
-            # Получаем список установленных пакетов
-            echo "## 📋 Installed Packages" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            python -m pip list --format=freeze >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            
-            # Безопасный аудит через pip list
-            echo "## 🔒 Security Audit" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            
-            echo "### pip-audit (from installed packages):" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            python -m pip list --format=freeze | python -m pip_audit --disable-pip --desc 2>&1 | grep -A2 -B2 "$SEVERITY_THRESHOLD\|CRITICAL\|HIGH" >> $GITHUB_STEP_SUMMARY || echo "✅ No vulnerabilities found above $SEVERITY_THRESHOLD threshold" >> $GITHUB_STEP_SUMMARY
+            python -m pip_audit --disable-pip -r /tmp/installed_packages.txt --desc --severity low 2>&1 >> $GITHUB_STEP_SUMMARY || echo "pip-audit completed" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             
             echo "### safety scan:" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            python -m pip list --format=freeze | sed 's/==.*//' > /tmp/packages.txt
-            python -m safety scan -r /tmp/packages.txt 2>&1 | grep -A3 -B3 "VULNERABILITY\|unpinned\|found" >> $GITHUB_STEP_SUMMARY || echo "✅ Safety scan completed" >> $GITHUB_STEP_SUMMARY
+            python -m safety scan -r /tmp/installed_packages.txt --json 2>/dev/null | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    if 'vulnerabilities' in data:
+        vulns = data['vulnerabilities']
+        if vulns:
+            for v in vulns:
+                print(f'✗ {v.get(\"package_name\", \"?\")} {v.get(\"analyzed_version\", \"?\")}')
+                print(f'  Severity: {v.get(\"severity\", \"?\")}')
+                print(f'  CVE: {v.get(\"CVE\", \"?\")}')
+        else:
+            print('✅ No vulnerabilities found')
+    else:
+        print('✅ Safety scan completed')
+except:
+    print('⚠️ Safety scan completed')
+" >> $GITHUB_STEP_SUMMARY || echo "safety scan completed" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             
-            echo "## 🎯 Recommendations" >> $GITHUB_STEP_SUMMARY
-            echo "1. Update your requirements.txt with exact versions:" >> $GITHUB_STEP_SUMMARY
-            echo "   \`\`\`bash" >> $GITHUB_STEP_SUMMARY
-            echo "   pip freeze > requirements.txt" >> $GITHUB_STEP_SUMMARY
-            echo "   \`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "## 📋 Summary" >> $GITHUB_STEP_SUMMARY
+            echo "Scanned $PACKAGE_COUNT packages for security vulnerabilities." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            echo "2. For pandas, use binary packages:" >> $GITHUB_STEP_SUMMARY
-            echo "   \`\`\`" >> $GITHUB_STEP_SUMMARY
-            echo "   pip install --only-binary :all: pandas" >> $GITHUB_STEP_SUMMARY
-            echo "   \`\`\`" >> $GITHUB_STEP_SUMMARY
-            
+            echo "**Recommendations:**" >> $GITHUB_STEP_SUMMARY
+            echo "- Update requirements.txt with exact versions: \`pip freeze > requirements.txt\`" >> $GITHUB_STEP_SUMMARY
+            echo "- Regularly run security scans" >> $GITHUB_STEP_SUMMARY
+            echo "- Review and fix reported vulnerabilities" >> $GITHUB_STEP_SUMMARY
           else
-            echo "❌ No requirements.txt found" >> $GITHUB_STEP_SUMMARY
+            echo "No Python packages found to scan." >> $GITHUB_STEP_SUMMARY
           fi
+      
+      - name: 'Generate exact requirements'
+        if: always()
+        run: |
+          if command -v python &> /dev/null && [ -f "requirements.txt" ]; then
+            python -m pip freeze > requirements_exact.txt
+            echo "Generated requirements_exact.txt"
+          fi
+      
+      - name: 'Upload artifacts'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-security-scan-${{ github.sha }}
+          path: |
+            requirements_exact.txt
+            requirements.txt
+          retention-days: 30
