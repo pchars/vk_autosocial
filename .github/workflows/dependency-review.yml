@@ -22,12 +22,12 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: 'Checkout repository'
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
       
-      - name: 'Dependency Review'
+      - name: Dependency Review
         uses: actions/dependency-review-action@v4
         with:
           comment-summary-in-pr: always
@@ -40,28 +40,28 @@ jobs:
       matrix:
         python-version: ['3.11']
     steps:
-      - name: 'Checkout repository'
+      - name: Checkout repository
         uses: actions/checkout@v4
       
-      - name: 'Setup Python ${{ matrix.python-version }}'
+      - name: Setup Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
       
-      - name: 'Install tools'
+      - name: Install tools
         run: |
           python -m pip install --upgrade pip wheel setuptools
           python -m pip install --only-binary :all: pandas numpy
           python -m pip install pip-audit safety>=2.4
       
-      - name: 'Install project dependencies'
+      - name: Install project dependencies
         continue-on-error: true
         run: |
           if [ -f "requirements.txt" ]; then
             python -m pip install -r requirements.txt
           fi
       
-      - name: 'Run security audits'
+      - name: Run security audits
         id: security-audit
         continue-on-error: true
         run: |
@@ -75,7 +75,7 @@ jobs:
           python -m pip list --format=freeze > /tmp/installed_packages.txt
           PACKAGE_COUNT=$(grep -c "==" /tmp/installed_packages.txt || echo "0")
           
-          echo "## 📦 Found $PACKAGE_COUNT packages" >> $GITHUB_STEP_SUMMARY
+          echo "## Found $PACKAGE_COUNT packages" >> $GITHUB_STEP_SUMMARY
           
           if [ "$PACKAGE_COUNT" -gt 0 ]; then
             echo "### pip-audit scan (severity: low+):" >> $GITHUB_STEP_SUMMARY
@@ -86,47 +86,42 @@ jobs:
             echo "### safety scan:" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             
-            # Create Python script for safety output parsing
-            cat > /tmp/parse_safety.py << 'EOF'
+            python3 -c "
+import subprocess
 import json
-import sys
 
 try:
-    import subprocess
     result = subprocess.run(
         ['python', '-m', 'safety', 'scan', '-r', '/tmp/installed_packages.txt', '--json'],
         capture_output=True,
         text=True
     )
     
-    if result.returncode == 0 or result.stdout:
+    if result.stdout:
         try:
             data = json.loads(result.stdout)
             if 'vulnerabilities' in data:
                 vulns = data['vulnerabilities']
                 if vulns:
                     for v in vulns:
-                        print(f"✗ {v.get('package_name', '?')} {v.get('analyzed_version', '?')}")
-                        print(f"  Severity: {v.get('severity', '?')}")
+                        print(f'✗ {v.get(\"package_name\", \"?\")} {v.get(\"analyzed_version\", \"?\")}')
+                        print(f'  Severity: {v.get(\"severity\", \"?\")}')
                         cve = v.get('CVE') or v.get('vulnerability_id', '?')
-                        print(f"  CVE: {cve}")
+                        print(f'  CVE: {cve}')
                 else:
-                    print("✅ No vulnerabilities found")
+                    print('✅ No vulnerabilities found')
             else:
-                print("✅ Safety scan completed")
+                print('✅ Safety scan completed')
         except json.JSONDecodeError:
-            print("⚠️ Safety scan completed (no JSON output)")
+            print('⚠️ Safety scan completed')
     else:
-        print("⚠️ Safety command failed")
-        
+        print('⚠️ Safety scan completed')
 except Exception as e:
-    print(f"⚠️ Error during safety scan: {str(e)}")
-EOF
-            
-            python /tmp/parse_safety.py >> $GITHUB_STEP_SUMMARY
+    print(f'⚠️ Error during safety scan')
+" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
             
-            echo "## 📋 Summary" >> $GITHUB_STEP_SUMMARY
+            echo "## Summary" >> $GITHUB_STEP_SUMMARY
             echo "Scanned $PACKAGE_COUNT packages for security vulnerabilities." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Recommendations:**" >> $GITHUB_STEP_SUMMARY
@@ -136,21 +131,3 @@ EOF
           else
             echo "No Python packages found to scan." >> $GITHUB_STEP_SUMMARY
           fi
-      
-      - name: 'Generate exact requirements'
-        if: always()
-        run: |
-          if command -v python &> /dev/null && [ -f "requirements.txt" ]; then
-            python -m pip freeze > requirements_exact.txt
-            echo "Generated requirements_exact.txt"
-          fi
-      
-      - name: 'Upload artifacts'
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-security-scan-${{ github.sha }}
-          path: |
-            requirements_exact.txt
-            requirements.txt
-          retention-days: 7
