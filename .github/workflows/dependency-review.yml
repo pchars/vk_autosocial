@@ -51,7 +51,6 @@ jobs:
       - name: Install tools
         run: |
           python -m pip install --upgrade pip wheel setuptools
-          python -m pip install --only-binary :all: pandas numpy
           python -m pip install pip-audit safety>=2.4
       
       - name: Install project dependencies
@@ -59,11 +58,41 @@ jobs:
         run: |
           if [ -f "requirements.txt" ]; then
             python -m pip install -r requirements.txt
+          else
+            echo "No requirements.txt found, installing basic dependencies"
+            python -m pip install pandas numpy
           fi
       
-      - name: Run security audits
-        id: security-audit
+      - name: Generate dependency list
+        id: deps
+        run: |
+          python -m pip list --format=freeze > /tmp/installed_packages.txt
+          PACKAGE_COUNT=$(grep -c "==" /tmp/installed_packages.txt || echo "0")
+          echo "PACKAGE_COUNT=$PACKAGE_COUNT" >> $GITHUB_OUTPUT
+          echo "Found $PACKAGE_COUNT packages to scan"
+      
+      - name: Run pip-audit scan
+        if: steps.deps.outputs.PACKAGE_COUNT > 0
+        id: pip-audit
         continue-on-error: true
+        run: |
+          echo "## pip-audit scan (severity: low+):" > /tmp/pip_audit_result.txt
+          echo '```' >> /tmp/pip_audit_result.txt
+          python -m pip_audit --disable-pip -r /tmp/installed_packages.txt --desc --severity low 2>&1 | tee -a /tmp/pip_audit_result.txt || true
+          echo '```' >> /tmp/pip_audit_result.txt
+      
+      - name: Run safety scan
+        if: steps.deps.outputs.PACKAGE_COUNT > 0
+        id: safety
+        continue-on-error: true
+        run: |
+          echo "## Safety scan:" > /tmp/safety_result.txt
+          echo '```' >> /tmp/safety_result.txt
+          python -m safety scan -r /tmp/installed_packages.txt --json 2>/dev/null | python -c "import json,sys;d=json.load(sys.stdin);v=d.get('vulnerabilities',[]);print('\n'.join(f'✗ {v.get(\"package_name\",\"?\")} {v.get(\"analyzed_version\",\"?\")}\\n  Severity: {v.get(\"severity\",\"?\")}\\n  CVE: {v.get(\"CVE\") or v.get(\"vulnerability_id\",\"?\")}\\n' for v in v) if v else '✅ No vulnerabilities found') if 'vulnerabilities' in d else '✅ No vulnerabilities found')" 2>/dev/null || echo "⚠️ Error during safety scan" >> /tmp/safety_result.txt 2>&1 || echo "⚠️ Safety scan failed" >> /tmp/safety_result.txt
+          echo '```' >> /tmp/safety_result.txt
+      
+      - name: Generate security report
+        if: always()
         run: |
           echo "# Python Dependency Security Scan Report" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
@@ -72,33 +101,32 @@ jobs:
           echo "**Python Version**: $(python --version)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          python -m pip list --format=freeze > /tmp/installed_packages.txt
-          PACKAGE_COUNT=$(grep -c "==" /tmp/installed_packages.txt || echo "0")
-          
-          echo "## Found $PACKAGE_COUNT packages" >> $GITHUB_STEP_SUMMARY
-          
-          if [ "$PACKAGE_COUNT" -gt 0 ]; then
-            echo "### pip-audit scan (severity: low+):" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
-            python -m pip_audit --disable-pip -r /tmp/installed_packages.txt --desc --severity low 2>&1 >> $GITHUB_STEP_SUMMARY || echo "pip-audit completed" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.deps.outputs.PACKAGE_COUNT }}" -gt "0" ]; then
+            echo "## Found ${{ steps.deps.outputs.PACKAGE_COUNT }} packages" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
             
-            echo "### safety scan:" >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            # Add pip-audit results if available
+            if [ -f "/tmp/pip_audit_result.txt" ]; then
+              cat /tmp/pip_audit_result.txt >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
             
-            # Create a temporary Python script
-            cat > /tmp/safety_parser.py << "import subprocess, json; exec(\"try: result = subprocess.run(['python', '-m', 'safety', 'scan', '-r', '/tmp/installed_packages.txt', '--json'], capture_output=True, text=True); print('✅ Safety scan completed') if not result.stdout or 'vulnerabilities' not in (data := json.loads(result.stdout)) else [print(f'✗ {v.get(\\\"package_name\\\", \\\"?\\\")} {v.get(\\\"analyzed_version\\\", \\\"?\\\")}\\n  Severity: {v.get(\\\"severity\\\", \\\"?\\\")}\\n  CVE: {v.get(\\\"CVE\\\") or v.get(\\\"vulnerability_id\\\", \\\"?\\\")}') for v in data['vulnerabilities']] if data['vulnerabilities'] else print('✅ No vulnerabilities found') except json.JSONDecodeError: print('⚠️ Safety scan completed') except Exception: print('⚠️ Error during safety scan')\")"
-            
-            python /tmp/safety_parser.py >> $GITHUB_STEP_SUMMARY
-            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            # Add safety results if available
+            if [ -f "/tmp/safety_result.txt" ]; then
+              cat /tmp/safety_result.txt >> $GITHUB_STEP_SUMMARY
+              echo "" >> $GITHUB_STEP_SUMMARY
+            fi
             
             echo "## Summary" >> $GITHUB_STEP_SUMMARY
-            echo "Scanned $PACKAGE_COUNT packages for security vulnerabilities." >> $GITHUB_STEP_SUMMARY
+            echo "Scanned ${{ steps.deps.outputs.PACKAGE_COUNT }} packages for security vulnerabilities." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "**Recommendations:**" >> $GITHUB_STEP_SUMMARY
             echo "- Update requirements.txt with exact versions: \`pip freeze > requirements.txt\`" >> $GITHUB_STEP_SUMMARY
             echo "- Regularly run security scans" >> $GITHUB_STEP_SUMMARY
             echo "- Review and fix reported vulnerabilities" >> $GITHUB_STEP_SUMMARY
+            echo "- Consider using \`pip-audit\` and \`safety\` in your local development workflow" >> $GITHUB_STEP_SUMMARY
           else
-            echo "No Python packages found to scan." >> $GITHUB_STEP_SUMMARY
+            echo "## No Python packages found to scan." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "Make sure your project has a \`requirements.txt\` file or installs dependencies via \`setup.py\`/\`pyproject.toml\`." >> $GITHUB_STEP_SUMMARY
           fi
