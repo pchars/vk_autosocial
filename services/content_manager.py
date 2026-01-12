@@ -2,10 +2,12 @@ import asyncio
 import random
 import time
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
+import aiohttp
 import requests
-from utils import get_logger, OSManagement, FileContentUtils
+from utils import get_logger, FileContentUtils
+from utils.os_management import OSManagement
 
 logger = get_logger(__name__)
 
@@ -13,6 +15,7 @@ logger = get_logger(__name__)
 class ContentManager:
     def __init__(self, vk_client):
         self.vk_client = vk_client
+        self.os_manager = OSManagement()
 
     async def wall_cleaner(self, group_id: int, delete_postponed: bool = True, delete_published: bool = True) -> Dict[
         str, Any]:
@@ -205,7 +208,7 @@ class ContentManager:
             return
 
         # Calculate the publishing date as a Unix timestamp
-        publish_date = start_time + delay
+        publish_date = int(start_time + delay)
 
         file_manipulation = FileContentUtils()
 
@@ -235,27 +238,157 @@ class ContentManager:
 
         photos.clear()
 
-    # WIP
-    async def download_group_images(self, group_id: str, max_posts: int = 100):
-        """Основная логика загрузки изображений"""
-        logger.info(f"Downloading images from group {group_id}")
+    @staticmethod
+    async def download_image(session: aiohttp.ClientSession, url: str, path: str, retries: int = 10) -> bool:
+        """Download image with retries on failure."""
+        for attempt in range(retries):
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                    if resp.status == 200:
+                        with open(path, 'wb') as f:
+                            f.write(await resp.read())
+                        logger.info(f"Downloaded: {path}")
+                        return True
+                    logger.warning(f"HTTP {resp.status}: {url} (attempt {attempt + 1}/{retries})")
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                logger.error(f"Failed: {url} - {type(e).__name__} (attempt {attempt + 1}/{retries})")
+            await asyncio.sleep(1)
+        return False
 
-        # Используем VKClient для получения постов
-        posts = await self.vk_client.get_group_posts(group_id=group_id, count=max_posts)
+    async def fetch_group_posts(
+            self,
+            group_id: str,
+            max_posts: Optional[int] = None,
+            batch_size: int = 100
+    ) -> List[Dict]:
+        """
+        Fetch posts from VK group with pagination.
+        """
+        try:
+            # Используем VKClient
+            total_response = await self.vk_client.get_group_posts(
+                group_id=group_id,
+                count=1
+            )
+            total_count = total_response.get('count', 0)
 
-        # Извлекаем URL изображений
-        image_urls = []
+        except Exception as e:
+            logger.error(f"Failed to get wall length for group {group_id}: {e}")
+            return []
+
+        post_limit = min(max_posts, total_count) if max_posts else total_count
+        if post_limit <= 0:
+            return []
+
+        all_posts = []
+        offset = 0
+
+        while offset < post_limit:
+            try:
+                current_batch = min(batch_size, post_limit - offset)
+
+                posts = await self.vk_client.get_group_posts(
+                    group_id=group_id,
+                    count=current_batch,
+                    offset=offset
+                )
+
+                if not posts.get('items'):
+                    break
+
+                all_posts.extend(posts['items'])
+                offset += len(posts['items'])
+                logger.info(f"Group {group_id}: loaded {len(all_posts)}/{post_limit} posts")
+
+                await asyncio.sleep(0.5)  # Rate limiting
+
+            except Exception as e:
+                logger.error(f"Error loading posts for group {group_id} (offset={offset}): {e}")
+                break
+
+        return all_posts
+
+    @staticmethod
+    def extract_image_urls(posts: List[Dict]) -> List[str]:
+        """
+        Извлекает URL изображений из постов
+        """
+        urls = []
         for post in posts:
             if post.get('marked_as_ads', 0) == 1:
                 continue
             for att in post.get('attachments', []):
                 if att.get('type') == 'photo' and 'sizes' in att.get('photo', {}):
-                    best_size = max(att['photo']['sizes'], key=lambda x: x['width'])
-                    image_urls.append(best_size['url'])
+                    urls.append(max(att['photo']['sizes'], key=lambda x: x['width'])['url'])
+        return urls
 
-        return image_urls
+    async def download_images_from_groups(
+            self,
+            folder: Path,
+            group_ids: List[int],
+            max_posts_per_group: Optional[int] = None,
+            max_concurrent: int = 10
+    ) -> Dict[str, int]:
+        """
+        Основной метод для загрузки изображений из групп
+        """
+        # Создаем папку
+        self.os_manager.ensure_folder_exists(folder)
+
+        stats = {
+            'total_downloaded': 0,
+            'total_failed': 0,
+            'groups_processed': 0
+        }
+
+        connector = aiohttp.TCPConnector(limit=max_concurrent)
+        timeout = aiohttp.ClientTimeout(total=60)
+
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            for group_id in group_ids:
+                try:
+                    vk_group_id = f"-{group_id}"
+
+                    posts = await self.fetch_group_posts(vk_group_id, max_posts=max_posts_per_group)
+
+                    if not posts:
+                        logger.warning(f"No posts found in group {group_id}")
+                        continue
+
+                    # Извлекаем URL изображений
+                    urls = self.extract_image_urls(posts)
+
+                    if not urls:
+                        logger.warning(f"No images found in group {group_id}")
+                        continue
+
+                    # Загружаем изображения
+                    tasks = []
+                    image_counter = stats['total_downloaded'] + 1
+
+                    for url in urls:
+                        path = folder / f"img_{image_counter}.jpg"
+                        tasks.append(self.download_image(session, url, str(path)))
+                        image_counter += 1
+
+                    results = await asyncio.gather(*tasks)
+                    successful = sum(results)
+                    failed = len(results) - successful
+
+                    stats['total_downloaded'] += successful
+                    stats['total_failed'] += failed
+                    stats['groups_processed'] += 1
+
+                    logger.info(f"Group {group_id}: {successful}/{len(urls)} images downloaded")
+
+                except Exception as e:
+                    logger.error(f"Error processing group {group_id}: {e}")
+                    continue
+
+        logger.info(f"Download completed: {stats['total_downloaded']} downloaded, {stats['total_failed']} failed")
+        return stats
 
     async def analyze_group(self, group_id: str):
         """Анализ группы"""
-        members = await self.vk_client.get_group_members(group_id)
-        # ... аналитика ...
+        pass
+        #members = await self.vk_client.get_group_members(group_id)

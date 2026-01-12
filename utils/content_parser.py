@@ -8,7 +8,7 @@ logger = get_logger(__name__)
 
 class FileContentUtils:
     @staticmethod
-    def delete_duplicates_from_text_db(self, db_text_file: str = "db_text.txt") -> List[str]:
+    def delete_duplicates_from_text_db(db_text_file: str = "db_text.txt") -> List[str]:
         # Check the file path
         if not db_text_file or db_text_file.strip() == "":
             logger.warning("Text database file path is empty, returning empty list")

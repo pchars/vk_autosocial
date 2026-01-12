@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import List, Iterator, Union, Optional, Callable
+from typing import List, Iterator, Union
 from utils import get_logger
 
 logger = get_logger(__name__)
