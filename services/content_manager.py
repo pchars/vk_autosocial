@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional
 
 import aiohttp
 import requests
+from PIL import Image
 from utils import get_logger, FileContentUtils
 from utils.os_management import OSManagement
 
@@ -387,6 +388,72 @@ class ContentManager:
 
         logger.info(f"Download completed: {stats['total_downloaded']} downloaded, {stats['total_failed']} failed")
         return stats
+
+    async def stories_publisher(self, folder: Path, group_id: int, num_of_stories: int = 1) -> None:
+        counter = 0
+        os_manager = OSManagement()
+
+        image_files = os_manager.get_files_list(folder)
+        image_files = [f for f in image_files if f and f.exists()]
+
+        if not image_files:
+            logger.warning("No valid image files found to process")
+            return
+
+        for file in image_files:
+            logger.debug(f"Processing file: {file}")
+            if not file or not file.exists() or str(file).strip() == '':
+                logger.warning(f"Skipping invalid file path: {file}")
+                continue
+            try:
+                if not file.exists():
+                    logger.warning(f"File does not exist: {file}")
+                    continue
+
+                image = Image.open(file)
+
+                # Get the size of the image
+                width, height = image.size
+                if height == 1080 and width <= 721:
+                    logger.warning(f"File for story: {file}")
+                    # Get an upload URL for a photo
+                    response = await self.vk_client.get_photos_stories_upload_server(
+                        group_id=int(group_id),
+                        add_to_news=1
+                    )
+                    upload_server = response['upload_url']
+                    # HTTP Session establishing for the POST requests
+                    session = requests.Session()
+
+                    # Upload the story
+                    with open(file, 'rb') as photo:
+                        response = session.post(upload_server, files={'file': photo}).json()
+                        logger.debug(f"Upload response: {response}")
+
+                    if 'response' not in response or 'upload_result' not in response['response']:
+                        logger.error(f"Upload failed for {file.name}: {response}")
+                        continue
+
+                    vk_story_img_response = await self.vk_client.put_photos_save_stories_photo(group_id=group_id,
+                                                                                        response=response)
+                    logger.debug(f"Save stories photo response: {vk_story_img_response}")
+
+                    if not vk_story_img_response or len(vk_story_img_response) == 0:
+                        logger.error(f"Failed to save photo for {file.name}")
+                        continue
+
+                    success = os_manager.delete_file(file)
+                    if not success:
+                        logger.warning(f"Could not delete file: {file}")
+                    logger.info('Story was published successfully.')
+                    counter += 1
+                    if counter == num_of_stories:
+                        break
+            except Exception as e:
+                logger.error(f'Failed to process {file}: {e}')
+                continue
+
+        return
 
     async def analyze_group(self, group_id: str):
         """Анализ группы"""

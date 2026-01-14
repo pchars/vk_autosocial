@@ -123,6 +123,29 @@ class VKClient:
             logger.error(f"Unexpected error getting wall upload server URL: {e}")
             return {}
 
+    async def get_photos_stories_upload_server(self, group_id: str, add_to_news: int = 1) -> Dict[str, Any]:
+        """Get stories upload server URL"""
+        logger.debug("Requesting stories upload server URL")
+
+        try:
+            response = await self._run_in_executor(
+                self.vk.stories.getPhotoUploadServer,
+                group_id=int(group_id),
+                add_to_news=add_to_news
+            )
+
+            return response
+
+        except vk_api.exceptions.ApiError as api_error:
+            if 'User authorization failed' in str(api_error):
+                logger.error(f'VKAuth error occurred: {str(api_error)}')
+            else:
+                logger.error(f"VK API error getting stories upload server URL: {api_error}")
+            return {}
+        except Exception as e:
+            logger.error(f"Unexpected error getting stories upload server URL: {e}")
+            return {}
+
     async def put_post(self, group_id: str, publish_date: str, message: str = "", attachments: List[str] = None,
                        primary_attachments_mode: str = 'grid') -> bool:
         """Publish post to the wall"""
@@ -165,6 +188,30 @@ class VKClient:
             return []
         except Exception as e:
             logger.error(f"Unexpected error putting uploaded photos to wall: {e}")
+            return []
+
+    async def put_photos_save_stories_photo(self, group_id: str, response: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Put uploaded photos to wall"""
+        logger.debug("Put uploaded photos to wall")
+        if not response or 'response' not in response:
+            logger.error(f"Invalid upload response: {response}")
+            return []
+        try:
+            story = await self._run_in_executor(
+                self.vk.stories.save,
+                upload_results=response['response']['upload_result']
+            )
+
+            return story
+
+        except vk_api.exceptions.ApiError as api_error:
+            if 'User authorization failed' in str(api_error):
+                logger.error(f'VKAuth error occurred: {str(api_error)}')
+            else:
+                logger.error(f"VK API error putting uploaded story: {api_error}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error putting uploaded story: {e}")
             return []
 
     async def add_friend(self, user_id: str) -> bool:

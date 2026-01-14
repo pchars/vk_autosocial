@@ -7,10 +7,8 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
-import requests
 import seaborn as sns
 import vk_api
-from PIL import Image
 
 from api import VKAuth, VKClient
 from services import PersonalPageManager, ContentManager, ImageProcessor
@@ -63,43 +61,50 @@ async def main():
             logger.warning("Some folders couldn't be created")
 
         # Public Management
-        download_stats = await c_manager.download_images_from_groups(
+        # download_stats = await c_manager.download_images_from_groups(
+        #     folder=config.folders.image_folder,
+        #     group_ids=config.groups.groups,  # List of the groups from config file
+        #     max_posts_per_group=100,
+        #     max_concurrent=10
+        # )
+        #
+        # logger.info(f"Images downloaded: {download_stats['total_downloaded']}")
+        #
+        # image_processing = ImageProcessor(similarity_threshold=5, folder_path=config.folders.image_folder)
+        # image_processing.check_for_duplicates(config.folders.image_folder)
+        # logger.info("Image processing for duplicates was completed")
+        # logger.info("Post scheduler was started")
+        # await c_manager.post_publisher(
+        #     folder=config.folders.image_folder,
+        #     your_group=config.groups.your_group,
+        #     start_time=config.posts.start_time,
+        #     text=str(text_file_path),
+        #     hashtags=config.posts.hashtags
+        # )
+        # logger.info("Post scheduler was finished")
+        logger.info("Stories scheduler was started")
+        await c_manager.stories_publisher(
             folder=config.folders.image_folder,
-            group_ids=config.groups.groups,  # List of the groups from config file
-            max_posts_per_group=100,
-            max_concurrent=10
+            group_id=config.groups.your_group,
+            num_of_stories=1
         )
-
-        logger.info(f"Images downloaded: {download_stats['total_downloaded']}")
-
-        image_processing = ImageProcessor(similarity_threshold=5, folder_path=config.folders.image_folder)
-        image_processing.check_for_duplicates(config.folders.image_folder)
-        logger.info("Image processing for duplicates was completed")
-        logger.info("Post scheduler was started")
-        await c_manager.post_publisher(
-            folder=config.folders.image_folder,
-            your_group=config.groups.your_group,
-            start_time=config.posts.start_time,
-            text=str(text_file_path)
-        )
-        logger.info("All posts were scheduled")
-
+        logger.info("Stories scheduler was finished")
         # Wall cleaning
-        wall_cleanup_stats = await c_manager.wall_cleaner(group_id=-config.groups.your_group,
-                                                          delete_postponed=True, delete_published=True)
-        logger.info(f"Wall cleanup completed: {wall_cleanup_stats['deleted_count']} removed")
+        # wall_cleanup_stats = await c_manager.wall_cleaner(group_id=-config.groups.your_group,
+        #                                                   delete_postponed=True, delete_published=False)
+        # logger.info(f"Wall cleanup completed: {wall_cleanup_stats['deleted_count']} removed")
 
         # Personal Page Management
         # Friends cleaning
-        friends_removal_stats = await pp_manager.friends_remover(month)
-        logger.info(f"Friend cleanup completed: {friends_removal_stats['deleted_count']} removed")
+        # friends_removal_stats = await pp_manager.friends_remover(month)
+        # logger.info(f"Friend cleanup completed: {friends_removal_stats['deleted_count']} removed")
         # Friends adder
-        await pp_manager.friends_adder(month, sex) # Add friends from GROUPS variable by gender and activity
-        logger.info(f"Friend adding completed")
+        # await pp_manager.friends_adder(month, sex) # Add friends from GROUPS variable by gender and activity
+        # logger.info(f"Friend adding completed")
         # Friends Requests cleaning
         # 1 - requests which you sent to people, 0 - requests which people sent to you (your subscribers)
-        friends_requests_removal_stats = await pp_manager.friends_requests_remover(1)
-        logger.info(f"Friends requests cleanup completed: {friends_requests_removal_stats['deleted_count']} removed")
+        # friends_requests_removal_stats = await pp_manager.friends_requests_remover(1)
+        # logger.info(f"Friends requests cleanup completed: {friends_requests_removal_stats['deleted_count']} removed")
     except Exception as e:
         logger.error(f"Main execution failed: {e}")
         logger.error(f"Error type: {type(e).__name__}")
@@ -113,35 +118,6 @@ async def main():
     # Communities analyzing
     # community_members_analyser(vk_session, month, week, chart_folder)
     # community_posts_analyser(vk_session, week, chart_folder)
-
-def stories_publisher(folder, vk_session):
-    counter = 0
-    # Upload the photo to the server
-    for file in os.listdir(folder):
-        image = Image.open(folder + '/' + file)
-
-        # Get the size of the image
-        width, height = image.size
-        if height == 1080 and width <= 721:
-            photo = open(folder + '/' + file, 'rb')
-            group = config.groups.your_group
-            # Get an upload URL for a photo
-            vk = vk_session.get_api()
-            upload_server = vk.stories.getPhotoUploadServer(group_id=int(group), add_to_news=1)['upload_url']
-            # Upload the story
-            response = requests.post(upload_server, files={'file': photo}).json()
-            # Save the story
-            try:
-                vk.stories.save(upload_results=response['response']['upload_result'])
-            except vk_api.exceptions.ApiError as e:
-                logger.error(str(e))
-
-            os.remove(folder + '/' + file)
-            logger.info('Story was published successfully.')
-            counter += 1
-            if counter == 10:
-                break
-
 
 def community_members_analyser(vk_session, month, week, chart_folder):
     group = config.groups.group_to_check
