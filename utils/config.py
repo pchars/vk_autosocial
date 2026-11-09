@@ -1,105 +1,67 @@
-import configparser
-from dataclasses import dataclass
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Mapping, Optional
+
+from dotenv import dotenv_values
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-@dataclass
-class VKAuthConfig:
-    phone_number: str
-    password: str
-    api_version: str = "5.199"
-
-
-@dataclass
-class GroupsConfig:
-    groups: List[int]  # List of groups ID
-    your_group: int  # Your public ID
-    group_to_check: int  # Public for analytics
-
-
-@dataclass
-class PostsConfig:
-    text: str = ""
-    start_time: Optional[int] = None
-    group_chat_link: str = ""
-    group_chat_reminder: int = 6
-    hashtags: str = ""
-    group_chat_reminder_text: str = ""
-
-    def get_text_file_path(self, base_dir: Path = None) -> Path:
-        """Возвращает абсолютный путь к файлу с текстами"""
-        if not self.text:
-            raise ValueError("Text file path is not configured")
-
-        text_path = Path(self.text)
-
-        # Если путь абсолютный - возвращаем как есть
-        if text_path.is_absolute():
-            return text_path
-
-        # Если путь относительный - делаем абсолютным относительно base_dir
-        if base_dir is None:
-            base_dir = Path.cwd()
-
-        return base_dir / text_path
-
-@dataclass
-class LoggingConfig:
+@dataclass(frozen=True)
+class Config:
+    telegram_token: str = ""
+    admin_ids: List[int] = field(default_factory=list)
+    vk_token: str = ""
+    vk_api_version: str = "5.199"
+    data_dir: Path = BASE_DIR / "data"
+    texts_file: Path = BASE_DIR / "db_text.txt"
     log_level: str = "info"
-    log_file: Optional[Path] = None
-    log_folder: Optional[Path] = None
-    console_output: bool = True
+    timezone: str = "Europe/Moscow"
+    autofill_interval_min: int = 30
 
-@dataclass
-class FoldersConfig:
-    image_folder: Path = "images"
-    chart_folder: Path = "charts"
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "app.db"
 
-@dataclass
-class AppConfig:
-    auth: VKAuthConfig
-    groups: GroupsConfig
-    posts: PostsConfig
-    logging: LoggingConfig
-    folders: FoldersConfig
+    @property
+    def images_dir(self) -> Path:
+        return self.data_dir / "images"
+
+    @property
+    def charts_dir(self) -> Path:
+        return self.data_dir / "charts"
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.data_dir / "logs"
 
     @classmethod
-    def from_cfg_file(cls, cfg_path: Path = Path("conf.cfg")):
-        """Download configuration from conf.cfg file"""
-        config = configparser.ConfigParser()
-        config.read(cfg_path)
+    def load(cls, base_dir: Path = BASE_DIR, env: Optional[Mapping[str, str]] = None) -> "Config":
+        """Read .env from base_dir; real environment variables win over the file."""
+        values = {k: v for k, v in dotenv_values(base_dir / ".env").items() if v is not None}
+        values.update(os.environ if env is None else env)
 
-        # Logging section
-        log_section = config['LOGGING'] if 'LOGGING' in config else {}
+        def get(name: str, default: str = "") -> str:
+            return (values.get(name) or default).strip()
 
         return cls(
-            auth=VKAuthConfig(
-                phone_number=config['AUTH']['PHONE_NUMBER'],
-                password=config['AUTH']['PASSWORD'],
-                api_version=config['AUTH'].get('API_VERSION', '5.199')
-            ),
-            groups=GroupsConfig(
-                groups=[int(g.strip()) for g in config['GROUPS']['GROUPS'].split(',')],
-                your_group=int(config['GROUPS']['YOUR_GROUP']),
-                group_to_check=int(config['GROUPS']['GROUP_TO_CHECK'])
-            ),
-            posts=PostsConfig(
-                text=config['POSTS']['TEXT'],
-                start_time=int(config['POSTS']['START_TIME']) if config['POSTS']['START_TIME'] else None,
-                group_chat_link=config['POSTS']['GROUP_CHAT_LINK'],
-                group_chat_reminder=int(config['POSTS']['GROUP_CHAT_REMINDER']),
-                hashtags=config['POSTS']['HASHTAGS'],
-                group_chat_reminder_text=config['POSTS']['GROUP_CHAT_REMINDER_TEXT']
-            ),
-            logging=LoggingConfig(
-                log_level=log_section.get('LOG_LEVEL', 'info'),
-                log_file=Path(log_section['LOG_FILE']) if 'LOG_FILE' in log_section else None,
-                log_folder=Path(log_section['LOG_FOLDER']) if 'LOG_FOLDER' in log_section else None,
-                console_output=log_section.getboolean('CONSOLE_OUTPUT', True)
-            ),
-            folders=FoldersConfig(
-                image_folder=Path(config['FOLDERS']['IMAGE_FOLDER']),
-                chart_folder=Path(config['FOLDERS']['CHART_FOLDER'])
-            )
+            telegram_token=get("TELEGRAM_BOT_TOKEN"),
+            admin_ids=parse_ids(get("TELEGRAM_ADMIN_IDS")),
+            vk_token=get("VK_TOKEN"),
+            vk_api_version=get("VK_API_VERSION", "5.199"),
+            data_dir=_path(base_dir, get("DATA_DIR", "data")),
+            texts_file=_path(base_dir, get("TEXTS_FILE", "db_text.txt")),
+            log_level=get("LOG_LEVEL", "info"),
+            timezone=get("TIMEZONE", "Europe/Moscow"),
+            autofill_interval_min=max(5, int(get("AUTOFILL_INTERVAL_MIN", "30"))),
         )
+
+
+def parse_ids(raw: str) -> List[int]:
+    return [int(chunk) for chunk in raw.replace(";", ",").split(",") if chunk.strip()]
+
+
+def _path(base_dir: Path, raw: str) -> Path:
+    path = Path(raw)
+    return path if path.is_absolute() else base_dir / path

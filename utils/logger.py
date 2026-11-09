@@ -1,143 +1,89 @@
 import logging
+import os
 import sys
-from datetime import datetime
-from enum import Enum
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Callable, Optional
 
-
-class LogLevel(str, Enum):
-    """Supported log levels"""
-    DEBUG = "debug"
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
-    CRITICAL = "critical"
-
-
-# Mapping of the string values into logging const
-LOG_LEVEL_MAPPING: Dict[str, int] = {
-    LogLevel.DEBUG: logging.DEBUG,
-    LogLevel.INFO: logging.INFO,
-    LogLevel.WARNING: logging.WARNING,
-    LogLevel.ERROR: logging.ERROR,
-    LogLevel.CRITICAL: logging.CRITICAL
+LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "warn": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL,
 }
-
-# Fallback for the cases when general logging was not set up yet
-_fallback_logger = None
-
-
-def _get_fallback_logger() -> logging.Logger:
-    """Creating temporary logger before init of the main one"""
-    global _fallback_logger
-    if _fallback_logger is None:
-        _fallback_logger = logging.getLogger('fallback')
-        if not _fallback_logger.handlers:
-            handler = logging.StreamHandler(sys.stdout)
-            formatter = logging.Formatter('%(levelname)s - %(message)s')
-            handler.setFormatter(formatter)
-            _fallback_logger.addHandler(handler)
-            _fallback_logger.setLevel(logging.INFO)
-    return _fallback_logger
+LOG_PREFIX = "app_"
+KEEP_DAYS = 30
 
 
-def get_log_level_from_string(level_str: str) -> int:
+class SessionFileHandler(logging.FileHandler):
+    """A new file on every start and every midnight (app_2026-11-08_21-58-31.log).
+
+    Files older than keep_days are deleted.
     """
-    Convert string log_level into logging const
 
-    Args:
-        level_str: string level of the logging from .cfg (debug, info, warning, error, critical)
+    def __init__(self, folder: Path, keep_days: int = KEEP_DAYS, now: Callable[[], datetime] = datetime.now):
+        self.folder = Path(folder)
+        self.keep_days = keep_days
+        self.now = now
+        started = now()
+        self.day = started.date()
+        super().__init__(self._path(started), encoding="utf-8", delay=True)
+        self._remove_old(started)
 
-    Returns:
-        Const of the logging
+    def emit(self, record: logging.LogRecord) -> None:
+        current = self.now()
+        if current.date() != self.day:
+            if self.stream:
+                self.stream.close()
+                self.stream = None  # type: ignore[assignment]
+            self.day = current.date()
+            self.baseFilename = os.path.abspath(self._path(current))
+            self._remove_old(current)
+        super().emit(record)
 
-    Raises:
-        ValueError: If you used wrong log_level in the .cfg
-    """
-    level_str = level_str.lower().strip()
+    def _path(self, moment: datetime) -> Path:
+        path = self.folder / f"{LOG_PREFIX}{moment:%Y-%m-%d_%H-%M-%S}.log"
+        suffix = 1
+        while path.exists():
+            path = self.folder / f"{LOG_PREFIX}{moment:%Y-%m-%d_%H-%M-%S}_{suffix}.log"
+            suffix += 1
+        return path
 
-    # Switch with mapping
-    if level_str in LOG_LEVEL_MAPPING:
-        return LOG_LEVEL_MAPPING[level_str]
-
-    # Different cases
-    switch_case = {
-        "debug": logging.DEBUG,
-        "info": logging.INFO,
-        "warn": logging.WARNING,
-        "warning": logging.WARNING,
-        "error": logging.ERROR,
-        "critical": logging.CRITICAL,
-        "fatal": logging.CRITICAL,
-    }
-
-    if level_str in switch_case:
-        return switch_case[level_str]
-
-    # If log_level is wrong then using INFO by default
-    raise ValueError(f"Unknown log level: {level_str}. Supported levels: {list(LOG_LEVEL_MAPPING.keys())}")
+    def _remove_old(self, moment: datetime) -> None:
+        oldest = (moment - timedelta(days=self.keep_days)).timestamp()
+        for path in self.folder.glob(f"{LOG_PREFIX}*.log"):
+            try:
+                if path.stat().st_mtime < oldest:
+                    path.unlink()
+            except OSError:
+                continue
 
 
-def setup_logging(log_level: str = "info", log_file: Optional[Path] = None,
-                  console_output: bool = True) -> logging.Logger:
-    """
-    Logging configuration
-
-    Args:
-        log_level: Level of logging (debug, info, warning, error, critical)
-        log_file: Path to the log file (optional)
-        console_output: Show output into the consol (bool)
-
-    Returns:
-        Configured logger
-    """
-    fallback_logger = _get_fallback_logger()
-
-    try:
-        level = get_log_level_from_string(log_level)
-    except ValueError as e:
-        fallback_logger.warning(f"{e}. Using INFO level as default.")
-        level = logging.INFO
-
-    # Formatter creation
+def setup_logging(level: str = "info", log_dir: Optional[Path] = None) -> None:
     formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
+    root = logging.getLogger()
+    root.handlers.clear()
+    root.setLevel(LEVELS.get(level.strip().lower(), logging.INFO))
 
-    logger = logging.getLogger()
-    logger.setLevel(level)
+    # Third-party DEBUG output contains request URLs with tokens.
+    for noisy in ("aiohttp", "aiogram.event", "asyncio", "PIL", "matplotlib"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
-    logger.handlers.clear()
+    console = logging.StreamHandler(sys.stdout)
+    console.setFormatter(formatter)
+    root.addHandler(console)
 
-    if console_output:
-        console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(formatter)
-        console_handler.setLevel(level)
-        logger.addHandler(console_handler)
-
-    if log_file:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        log_file = log_file.parent / f"{log_file.stem}_{timestamp}{log_file.suffix}"
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-
-        file_handler = logging.FileHandler(log_file)
+    if log_dir:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        file_handler = SessionFileHandler(log_dir)
         file_handler.setFormatter(formatter)
-        file_handler.setLevel(level)
-        logger.addHandler(file_handler)
-
-    return logger
+        root.addHandler(file_handler)
 
 
 def get_logger(name: str) -> logging.Logger:
-    """
-    Getter of the named logger
-
-    Args:
-        name: Logger name ( __name__)
-
-    Returns:
-        Ready to use logger
-    """
     return logging.getLogger(name)
