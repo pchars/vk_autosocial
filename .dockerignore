@@ -1,0 +1,11 @@
+.git
+.github
+.venv
+.env
+data
+tests
+__pycache__
+*.pyc
+.coverage
+.idea
+.vscode

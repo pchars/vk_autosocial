@@ -1,110 +1,87 @@
-# VK AutoSocial 🚀
+# VK AutoSocial
 
-A comprehensive automated social media management system for VKontakte (VK) that handles content curation, duplicate detection, automated posting, and community analytics.
+Telegram-бот, который сам держит отложку в группах ВКонтакте: берёт картинки из групп-источников,
+отсеивает повторы и ставит посты в отложенные записи на нужное число дней вперёд.
 
-## 📋 Features
+Управление — только кнопками в Telegram, без команд и настроек в файлах.
 
-- **Automated Content Management**: Download, process, and post images from VK groups
-- **Smart Duplicate Detection**: Advanced perceptual hashing to prevent duplicate posts
-- **Scheduled Posting**: Automatic scheduling with configurable intervals
-- **Community Analytics**: Detailed member demographics and post performance analysis
-- **Multi-Account Support**: Manage multiple VK accounts and groups
-- **Async Operations**: High-performance asynchronous API calls and downloads
-- **Content Curation**: Automatic friend management and subscription cleaning
+## Что умеет
 
-## 🛠 Installation
+- **Отложка всегда полная.** Для каждой группы задаётся, сколько постов в день и на сколько дней вперёд
+  держать запас (по умолчанию 3 поста в день на 90 дней). Пополнить можно кнопкой, а с включённым
+  автопополнением бот сам проверяет отложку каждые 30 минут. Большие запасы набираются частями по 50 постов.
+- **Автопополнение по умолчанию выключено** у каждой новой группы, чтобы бот ничего не поставил в отложку
+  из непроверенных источников. Включается кнопкой в карточке группы.
+- **Свои источники у каждой группы.** Картинки берутся из указанных групп, уже использованные и похожие
+  картинки повторно не публикуются.
+- **Тексты постов:** случайная цитата из `db_text.txt`, хэштеги и приглашение в чат каждый N-й пост.
+- **Аналитика:** аудитория (пол, возраст, активность, удалённые страницы), типичный пост по медиане,
+  охват и вовлечённость, графики. По тому, когда заходит аудитория и как набирали просмотры посты, бот
+  советует лучшие часы и дни и по кнопке (с подтверждением) переводит группу на это расписание.
+- **Аналитика любой группы ВК по ссылке** (по открытым данным) и сравнение её с одной из своих групп.
+- **Расписание:** равномерно в течение суток или в заданные часы и дни недели.
+- **Сторис** и **очистка** отложки или стены.
+- **Страница ВК:** репост постов группы на свою стену.
+- **Помощники:** человек пишет боту, владельцу приходит кнопка «Дать доступ».
+  Обновлять доступ к ВК и управлять помощниками может только владелец.
 
-1. **Clone the repository**:
+## Запуск
+
+Нужен Python 3.12 или новее.
+
 ```bash
-git clone https://github.com/pchars/vk_autosocial.git
-cd vk_autosocial
-```
-Create virtual environment:
-
-```bash
-# Linux/Mac
 python -m venv .venv
-source .venv/bin/activate
 # Windows
 .venv\Scripts\activate
+# Linux/Mac
+source .venv/bin/activate
+
+pip install -r requirements.txt
+cp .env.example .env   # и заполнить TELEGRAM_BOT_TOKEN и TELEGRAM_ADMIN_IDS
+python main.py
 ```
 
-Install dependencies:
+Доступ к ВК можно указать в `.env` (`VK_TOKEN`) или выдать прямо из бота:
+«Моя страница ВК» → «Обновить доступ к ВК».
+
+### На сервере (Docker)
 
 ```bash
-pip install -r requirements.txt
-```
-⚙️ Configuration
-
-Create and edit conf.cfg with your VK API credentials and settings:
-
-```ini
-[GROUPS]
-GROUPS=123456,789012,34567890
-YOUR_GROUP=123456789
-GROUP_TO_CHECK=123456789
-
-[POSTS]
-TEXT=db_text.txt
-START_TIME=1768204800
-GROUP_CHAT_LINK=https://url.of.chat/
-GROUP_CHAT_REMINDER=6
-HASHTAGS=#example #of #usage
-GROUP_CHAT_REMINDER_TEXT=text_sample
-[AUTH]
-PHONE_NUMBER=+123456789012
-PASSWORD=your_password
-API_VERSION=5.199
-
-[LOGGING]
-LOG_LEVEL=debug
-LOG_FILE=logs/app.log
-LOG_FOLDER=logs
-CONSOLE_OUTPUT=true
-
-[FOLDERS]
-IMAGE_FOLDER=images
-CHART_FOLDER=charts
+mkdir -p data && sudo chown -R 1000:1000 data   # в контейнере бот работает не от root
+cp .env.example .env && nano .env && chmod 600 .env
+docker compose up -d --build
+docker compose logs -f
 ```
 
-## 📁 Project Structure (OUTDATED)
-```text
-vk_autosocial/
-├── main.py                # Main application entry point
-├── requirements.txt       # Python dependencies
-├── conf.cfg               # Configuration file
-├── db_text.txt            # Database for post texts
-├── tmp/                   # Temporary image storage
-├── charts/                # Analytics charts output
-├── logs/                  # Application logs (auto-created)
-└── README.md              # This file
+Обновление: заменить файлы кода и выполнить `docker compose up -d --build`.
+
+Одновременно может работать только один экземпляр бота. Все данные лежат в папке `data/`:
+база `app.db`, скачанные картинки и логи.
+
+## Как пользоваться
+
+1. `/start` — внизу появится меню.
+2. «Добавить группу» → ссылка на группу, где ваш аккаунт ВК — редактор или админ.
+3. Ссылки на группы-источники картинок (можно несколько в одном сообщении).
+4. «Пополнить отложку сейчас» — проверьте в ВК, что посты получились нужные.
+5. «Включить автопополнение» — дальше бот сам держит отложку и пишет в Telegram, если что-то пошло не так.
+
+Настройки группы (частота, запас, картинок в посте, хэштеги, чат) — в карточке группы: «Мои группы» → «Настройки».
+
+## Ограничения ВК
+
+- В сообществе может быть до 1500 отложенных записей; бот держит не больше 1400.
+- В сутки ВК разрешает создать ограниченное число отложенных записей. Если лимит исчерпан,
+  бот останавливается и продолжает позже сам.
+
+## Тесты
+
+```bash
+pip install -r requirements-dev.txt
+python -m coverage run -m unittest discover -s tests -t .
+python -m coverage report --omit="tests/*,.venv/*"
 ```
 
+## Лицензия
 
-## 📊 Analytics
-The script generates comprehensive analytics including:
-
-- User demographics (gender, age distribution)
-- Activity metrics (active vs. inactive users)
-- Post performance (views, likes, reposts)
-- Visualization charts in the charts/ directory
-
-## 🤝 Contributing
-- Fork the repository
-- Create a feature branch
-- Make your changes
-- Add tests if applicable
-- Submit a pull request
-
-## 📄 License
-This project is licensed under the MIT License - see the **LICENSE** file for details.
-
-## 🆘 Support
-For issues and questions:
-
-- Check the configuration settings
-- Verify API permissions
-- Ensure all dependencies are installed
-- Check VK API status for any service disruptions
-
-Note: This tool should be used in compliance with VK's Terms of Service. Automated activities should respect rate limits and community guidelines.
+GNU GPL v3, см. файл `LICENSE`.
