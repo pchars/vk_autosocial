@@ -1,11 +1,3 @@
-"""
-API package for VK AutoSocial
-"""
+from .vk import VkAuthError, VkClient, VkError, VkFloodError
 
-from .vk_auth import VKAuth
-from .vk_client import VKClient
-
-__all__ = [
-    'VKAuth',
-    'VKClient'
-]
+__all__ = ["VkAuthError", "VkClient", "VkError", "VkFloodError"]
